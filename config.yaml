@@ -3,7 +3,7 @@ server:
   port: 8080
   mode: debug
 database:
-  dsn: root:@tcp(127.0.0.1:3306)/flower_lottery?charset=utf8mb4&parseTime=True&loc=Local
+  dsn: root:123456@tcp(127.0.0.1:3306)/flower_lottery?charset=utf8mb4&parseTime=True&loc=Local
   max_idle_conns: 10
   max_open_conns: 100
   conn_max_lifetime_minutes: 60
@@ -15,3 +15,6 @@ jwt:
 log:
   level: info
   format: console
+
+storage:
+  upload_dir: storage/uploads

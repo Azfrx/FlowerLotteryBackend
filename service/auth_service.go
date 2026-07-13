@@ -26,7 +26,6 @@ func NewAuthService(users repository.UserRepository, tokens *tokenjwt.Manager) *
 func (s *AuthService) Register(userNo, nickname, avatarURL, password string) (*model.User, tokenjwt.Pair, error) {
 	userNo = strings.TrimSpace(userNo)
 	nickname = strings.TrimSpace(nickname)
-	avatarURL = strings.TrimSpace(avatarURL)
 	if length := utf8.RuneCountInString(userNo); length < 3 || length > 64 {
 		return nil, tokenjwt.Pair{}, common.ErrUserIDInvalid
 	}
@@ -107,13 +106,18 @@ func (s *AuthService) Logout(raw string) error {
 	return s.users.RevokeRefreshToken(tokenjwt.Hash(raw), s.now())
 }
 func (s *AuthService) Me(id uint64) (*model.User, error) { return s.users.FindByID(id) }
-func (s *AuthService) UpdateProfile(id uint64, nickname, avatarURL string) (*model.User, error) {
+func (s *AuthService) UpdateProfile(id uint64, nickname string) (*model.User, error) {
 	nickname = strings.TrimSpace(nickname)
-	avatarURL = strings.TrimSpace(avatarURL)
 	if nickname == "" {
 		return nil, common.ErrNicknameRequired
 	}
-	if err := s.users.UpdateProfile(id, nickname, avatarURL); err != nil {
+	if err := s.users.UpdateProfile(id, nickname); err != nil {
+		return nil, err
+	}
+	return s.users.FindByID(id)
+}
+func (s *AuthService) UpdateAvatar(id uint64, avatarURL string) (*model.User, error) {
+	if err := s.users.UpdateAvatar(id, avatarURL); err != nil {
 		return nil, err
 	}
 	return s.users.FindByID(id)

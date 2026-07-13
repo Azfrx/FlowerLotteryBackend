@@ -11,8 +11,7 @@ type Register struct {
 	Password  string `json:"password" binding:"required,min=6,max=72"`
 }
 type UpdateProfile struct {
-	Nickname  string `json:"nickname" binding:"required,max=64"`
-	AvatarURL string `json:"avatar_url" binding:"omitempty,url,max=512"`
+	Nickname string `json:"nickname" binding:"required,max=64"`
 }
 type ChangePassword struct {
 	CurrentPassword string `json:"current_password" binding:"required,min=6,max=72"`

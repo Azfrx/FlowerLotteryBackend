@@ -1,4 +1,4 @@
-# FlowerLottery Backend & Admin
+﻿# FlowerLottery Backend & Admin
 
 花愿奇遇活动完整后端与管理后台。后端使用 Go 1.24+、Gin、GORM、MySQL 8、Viper、Zap、JWT 和 bcrypt；管理后台使用 Vue3、TypeScript、Pinia、Element Plus、Axios、ECharts 与 Vite。
 
@@ -75,3 +75,13 @@ cd admin && npm run build
 ```
 
 核心规则以需求文档为准：六档金币兑换花瓣、白昼/星夜 1/10/30 抽、概率与金币保底点亮、18 朵提前停止退款、实际花瓣消耗进入榜单。
+## 用户头像存储
+
+- 上传接口：注册使用 `POST /api/v1/auth/register` 的 multipart 表单可选字段 `avatar`；登录用户使用 `POST /api/v1/me/avatar`，文件字段同为 `avatar`。
+- 仅接受 JPEG/PNG，上传文件最大 8MB，解码后最大 4000 万像素。
+- Backend 居中裁剪并生成 512×512、质量 85 的 JPEG，不保留用户原图和原始文件名。
+- 默认存储目录为 `storage/uploads/avatars`，数据库保存 `/uploads/avatars/{随机名}.jpg`。
+- `storage/uploads` 必须具备写权限；生产部署必须挂载持久化磁盘，避免容器重启后头像丢失。
+- Backend 直接提供 `/uploads` 静态文件服务；生产网关需同时转发 `/api` 和 `/uploads`。
+- 更换头像成功后会删除旧的本地头像文件；历史外链头像不会被删除。
+

@@ -56,10 +56,13 @@ func (r *authServiceTestRepository) CreateUser(user *model.User) error {
 	return nil
 }
 
-func (r *authServiceTestRepository) UpdateProfile(id uint64, nickname, avatarURL string) error {
-	user := r.users[id]
-	user.Nickname = nickname
-	user.AvatarURL = avatarURL
+func (r *authServiceTestRepository) UpdateProfile(id uint64, nickname string) error {
+	r.users[id].Nickname = nickname
+	return nil
+}
+
+func (r *authServiceTestRepository) UpdateAvatar(id uint64, avatarURL string) error {
+	r.users[id].AvatarURL = avatarURL
 	return nil
 }
 
@@ -143,11 +146,11 @@ func TestAuthServiceProfileAndPasswordUpdates(t *testing.T) {
 		t.Fatalf("Register() error = %v", err)
 	}
 
-	updated, err := service.UpdateProfile(user.ID, "  新昵称  ", "https://example.com/avatar.png")
+	updated, err := service.UpdateProfile(user.ID, "  新昵称  ")
 	if err != nil {
 		t.Fatalf("UpdateProfile() error = %v", err)
 	}
-	if updated.Nickname != "新昵称" || updated.AvatarURL != "https://example.com/avatar.png" {
+	if updated.Nickname != "新昵称" {
 		t.Fatalf("unexpected updated profile: %+v", updated)
 	}
 

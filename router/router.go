@@ -15,8 +15,11 @@ import (
 func New(db *gorm.DB, log *zap.Logger, cfg *config.Config) *gin.Engine {
 	r := gin.New()
 	r.Use(middleware.RequestLogger(log), middleware.Recovery(log))
+	r.MaxMultipartMemory = 8 << 20
+	r.Static("/uploads", cfg.Storage.UploadDir)
 	tokens := tokenjwt.New(cfg.JWT)
-	auth := controller.NewAuthController(service.NewAuthService(repository.NewUserRepository(db), tokens))
+	avatars := service.NewAvatarService(cfg.Storage.UploadDir)
+	auth := controller.NewAuthController(service.NewAuthService(repository.NewUserRepository(db), tokens), avatars)
 	wallet := controller.NewWalletController(service.NewWalletService(repository.NewWalletRepository(db)))
 	game := controller.NewGameController(service.NewGameService(repository.NewGameRepository(db)))
 	adminController := controller.NewAdminController(db, cfg.JWT)
@@ -31,6 +34,7 @@ func New(db *gorm.DB, log *zap.Logger, cfg *config.Config) *gin.Engine {
 	protected.POST("/auth/logout", auth.Logout)
 	protected.GET("/me", auth.Me)
 	protected.PATCH("/me", auth.UpdateProfile)
+	protected.POST("/me/avatar", auth.UploadAvatar)
 	protected.PUT("/me/password", auth.ChangePassword)
 	protected.GET("/wallet", wallet.Get)
 	protected.GET("/wallet/exchange-options", wallet.Options)

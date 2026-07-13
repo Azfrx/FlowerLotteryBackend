@@ -5,6 +5,7 @@ type Config struct {
 	Database Database `mapstructure:"database"`
 	JWT      JWT      `mapstructure:"jwt"`
 	Log      Log      `mapstructure:"log"`
+	Storage  Storage  `mapstructure:"storage"`
 }
 type Server struct {
 	Host string `mapstructure:"host"`
@@ -22,6 +23,9 @@ type JWT struct {
 	Secret              string `mapstructure:"secret"`
 	AccessExpireMinutes int    `mapstructure:"access_expire_minutes"`
 	RefreshExpireHours  int    `mapstructure:"refresh_expire_hours"`
+}
+type Storage struct {
+	UploadDir string `mapstructure:"upload_dir"`
 }
 type Log struct {
 	Level  string `mapstructure:"level"`

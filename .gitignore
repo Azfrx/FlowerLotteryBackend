@@ -6,3 +6,6 @@ dist/
 !.env.example
 config.local.yaml
 *.tsbuildinfo
+
+storage/uploads/*
+!storage/uploads/.gitkeep
