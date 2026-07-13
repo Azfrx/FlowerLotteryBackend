@@ -1,13 +1,17 @@
 package service
 
 import (
+	"errors"
 	"flower-lottery-backend/common"
 	"flower-lottery-backend/model"
 	tokenjwt "flower-lottery-backend/pkg/jwt"
 	"flower-lottery-backend/repository"
 	"flower-lottery-backend/utils"
+	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type AuthService struct {
@@ -18,6 +22,40 @@ type AuthService struct {
 
 func NewAuthService(users repository.UserRepository, tokens *tokenjwt.Manager) *AuthService {
 	return &AuthService{users: users, tokens: tokens, now: time.Now}
+}
+func (s *AuthService) Register(userNo, nickname, avatarURL, password string) (*model.User, tokenjwt.Pair, error) {
+	userNo = strings.TrimSpace(userNo)
+	nickname = strings.TrimSpace(nickname)
+	avatarURL = strings.TrimSpace(avatarURL)
+	if length := utf8.RuneCountInString(userNo); length < 3 || length > 64 {
+		return nil, tokenjwt.Pair{}, common.ErrUserIDInvalid
+	}
+	if nickname == "" {
+		return nil, tokenjwt.Pair{}, common.ErrNicknameRequired
+	}
+	if _, err := s.users.FindByUserNo(userNo); err == nil {
+		return nil, tokenjwt.Pair{}, common.ErrUserExists
+	} else if err != gorm.ErrRecordNotFound {
+		return nil, tokenjwt.Pair{}, err
+	}
+	hash, err := utils.HashPassword(password)
+	if err != nil {
+		return nil, tokenjwt.Pair{}, err
+	}
+	user := &model.User{
+		UserNo:       userNo,
+		Nickname:     nickname,
+		AvatarURL:    avatarURL,
+		PasswordHash: hash,
+		Status:       1,
+	}
+	if err = s.users.CreateUser(user); err != nil {
+		if isDuplicateUserError(err) {
+			return nil, tokenjwt.Pair{}, common.ErrUserExists
+		}
+		return nil, tokenjwt.Pair{}, err
+	}
+	return s.Login(userNo, password)
 }
 func (s *AuthService) Login(userNo, password string) (*model.User, tokenjwt.Pair, error) {
 	user, err := s.users.FindByUserNo(userNo)
@@ -69,3 +107,42 @@ func (s *AuthService) Logout(raw string) error {
 	return s.users.RevokeRefreshToken(tokenjwt.Hash(raw), s.now())
 }
 func (s *AuthService) Me(id uint64) (*model.User, error) { return s.users.FindByID(id) }
+func (s *AuthService) UpdateProfile(id uint64, nickname, avatarURL string) (*model.User, error) {
+	nickname = strings.TrimSpace(nickname)
+	avatarURL = strings.TrimSpace(avatarURL)
+	if nickname == "" {
+		return nil, common.ErrNicknameRequired
+	}
+	if err := s.users.UpdateProfile(id, nickname, avatarURL); err != nil {
+		return nil, err
+	}
+	return s.users.FindByID(id)
+}
+func (s *AuthService) ChangePassword(id uint64, currentPassword, newPassword string) error {
+	user, err := s.users.FindByID(id)
+	if err != nil {
+		return err
+	}
+	if !utils.CheckPassword(user.PasswordHash, currentPassword) {
+		return common.ErrCurrentPassword
+	}
+	if utils.CheckPassword(user.PasswordHash, newPassword) {
+		return common.ErrPasswordUnchanged
+	}
+	hash, err := utils.HashPassword(newPassword)
+	if err != nil {
+		return err
+	}
+	if err = s.users.UpdatePassword(id, hash); err != nil {
+		return err
+	}
+	return s.users.RevokeUserRefreshTokens(id, s.now())
+}
+
+func isDuplicateUserError(err error) bool {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	var mysqlErr *mysql.MySQLError
+	return errors.As(err, &mysqlErr) && mysqlErr.Number == 1062
+}

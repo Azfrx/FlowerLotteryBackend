@@ -176,6 +176,7 @@ type LotteryDraw struct {
 	FlowerRandomValue    *uint
 	FlowerProbabilityPPM *uint
 	GuaranteeTriggered   uint8
+	RewardItem           RewardItem `gorm:"foreignKey:RewardItemID"`
 	CreatedAt            time.Time
 }
 

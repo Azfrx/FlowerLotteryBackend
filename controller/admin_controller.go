@@ -56,11 +56,14 @@ func (a *AdminController) Users(c *gin.Context) {
 		ID           uint64
 		UserNo       string
 		Nickname     string
+		AvatarURL    string
 		Status       uint8
+		LastLoginAt  *time.Time
+		CreatedAt    time.Time
 		CoinBalance  int64
 		PetalBalance int64
 	}
-	a.db.Table("users u").Select("u.id,u.user_no,u.nickname,u.status,w.coin_balance,w.petal_balance").Joins("LEFT JOIN user_wallets w ON w.user_id=u.id").Where("u.deleted_at IS NULL").Order("u.id DESC").Limit(200).Scan(&list)
+	a.db.Table("users u").Select("u.id,u.user_no,u.nickname,u.avatar_url,u.status,u.last_login_at,u.created_at,w.coin_balance,w.petal_balance").Joins("LEFT JOIN user_wallets w ON w.user_id=u.id").Where("u.deleted_at IS NULL").Order("u.id DESC").Limit(200).Scan(&list)
 	response.Success(c, list)
 }
 func (a *AdminController) Assets(c *gin.Context) {

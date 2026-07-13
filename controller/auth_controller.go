@@ -11,6 +11,19 @@ import (
 type AuthController struct{ service *service.AuthService }
 
 func NewAuthController(s *service.AuthService) *AuthController { return &AuthController{service: s} }
+func (cn *AuthController) Register(c *gin.Context) {
+	var req request.Register
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, 400, 10001, "参数错误")
+		return
+	}
+	user, pair, err := cn.service.Register(req.UserID, req.Nickname, req.AvatarURL, req.Password)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	response.Success(c, gin.H{"user": user, "tokens": pair})
+}
 func (cn *AuthController) Login(c *gin.Context) {
 	var req request.Login
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -53,4 +66,29 @@ func (cn *AuthController) Me(c *gin.Context) {
 		return
 	}
 	response.Success(c, user)
+}
+func (cn *AuthController) UpdateProfile(c *gin.Context) {
+	var req request.UpdateProfile
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, 400, 10001, "参数错误")
+		return
+	}
+	user, err := cn.service.UpdateProfile(middleware.CurrentUserID(c), req.Nickname, req.AvatarURL)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	response.Success(c, user)
+}
+func (cn *AuthController) ChangePassword(c *gin.Context) {
+	var req request.ChangePassword
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, 400, 10001, "参数错误")
+		return
+	}
+	if err := cn.service.ChangePassword(middleware.CurrentUserID(c), req.CurrentPassword, req.NewPassword); err != nil {
+		writeError(c, err)
+		return
+	}
+	response.Success(c, gin.H{})
 }

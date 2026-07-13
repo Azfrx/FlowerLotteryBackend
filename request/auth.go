@@ -4,6 +4,20 @@ type Login struct {
 	UserID   string `json:"user_id" binding:"required,max=64"`
 	Password string `json:"password" binding:"required,min=6,max=72"`
 }
+type Register struct {
+	UserID    string `json:"user_id" binding:"required,min=3,max=64"`
+	Nickname  string `json:"nickname" binding:"required,max=64"`
+	AvatarURL string `json:"avatar_url" binding:"omitempty,url,max=512"`
+	Password  string `json:"password" binding:"required,min=6,max=72"`
+}
+type UpdateProfile struct {
+	Nickname  string `json:"nickname" binding:"required,max=64"`
+	AvatarURL string `json:"avatar_url" binding:"omitempty,url,max=512"`
+}
+type ChangePassword struct {
+	CurrentPassword string `json:"current_password" binding:"required,min=6,max=72"`
+	NewPassword     string `json:"new_password" binding:"required,min=6,max=72"`
+}
 type Refresh struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }

@@ -1,7 +1,6 @@
 package repository
 
 import (
-	"errors"
 	"flower-lottery-backend/model"
 	"gorm.io/gorm"
 	"time"
@@ -10,10 +9,14 @@ import (
 type UserRepository interface {
 	FindByUserNo(userNo string) (*model.User, error)
 	FindByID(id uint64) (*model.User, error)
+	CreateUser(user *model.User) error
+	UpdateProfile(id uint64, nickname, avatarURL string) error
+	UpdatePassword(id uint64, passwordHash string) error
 	UpdateLastLogin(id uint64, at time.Time) error
 	SaveRefreshToken(token *model.RefreshToken) error
 	FindRefreshToken(hash string) (*model.RefreshToken, error)
 	RevokeRefreshToken(hash string, at time.Time) error
+	RevokeUserRefreshTokens(userID uint64, at time.Time) error
 }
 type userRepository struct{ db *gorm.DB }
 
@@ -28,6 +31,22 @@ func (r *userRepository) FindByID(id uint64) (*model.User, error) {
 	err := r.db.Where("id = ? AND deleted_at IS NULL", id).First(&v).Error
 	return &v, err
 }
+func (r *userRepository) CreateUser(user *model.User) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+		return tx.Create(&model.UserWallet{UserID: user.ID}).Error
+	})
+}
+func (r *userRepository) UpdateProfile(id uint64, nickname, avatarURL string) error {
+	return r.db.Model(&model.User{}).Where("id=? AND deleted_at IS NULL", id).
+		Updates(map[string]any{"nickname": nickname, "avatar_url": avatarURL}).Error
+}
+func (r *userRepository) UpdatePassword(id uint64, passwordHash string) error {
+	return r.db.Model(&model.User{}).Where("id=? AND deleted_at IS NULL", id).
+		Update("password_hash", passwordHash).Error
+}
 func (r *userRepository) UpdateLastLogin(id uint64, at time.Time) error {
 	return r.db.Model(&model.User{}).Where("id = ?", id).Update("last_login_at", at).Error
 }
@@ -39,11 +58,10 @@ func (r *userRepository) FindRefreshToken(hash string) (*model.RefreshToken, err
 }
 func (r *userRepository) RevokeRefreshToken(hash string, at time.Time) error {
 	result := r.db.Model(&model.RefreshToken{}).Where("token_hash = ? AND revoked_at IS NULL", hash).Update("revoked_at", at)
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected == 0 {
-		return errors.New("token not found")
-	}
-	return nil
+	return result.Error
+}
+func (r *userRepository) RevokeUserRefreshTokens(userID uint64, at time.Time) error {
+	return r.db.Model(&model.RefreshToken{}).
+		Where("subject_type='user' AND subject_id=? AND revoked_at IS NULL", userID).
+		Update("revoked_at", at).Error
 }
