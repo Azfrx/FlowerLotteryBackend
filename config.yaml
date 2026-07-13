@@ -1,0 +1,17 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  mode: debug
+database:
+  dsn: root:password@tcp(127.0.0.1:3306)/flower_lottery?charset=utf8mb4&parseTime=True&loc=Local
+  max_idle_conns: 10
+  max_open_conns: 100
+  conn_max_lifetime_minutes: 60
+jwt:
+  issuer: flower-lottery
+  secret: change-this-secret
+  access_expire_minutes: 30
+  refresh_expire_hours: 168
+log:
+  level: info
+  format: console

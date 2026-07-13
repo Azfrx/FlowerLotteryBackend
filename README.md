@@ -1,0 +1,77 @@
+# FlowerLottery Backend & Admin
+
+花愿奇遇活动完整后端与管理后台。后端使用 Go 1.24+、Gin、GORM、MySQL 8、Viper、Zap、JWT 和 bcrypt；管理后台使用 Vue3、TypeScript、Pinia、Element Plus、Axios、ECharts 与 Vite。
+
+## 目录
+
+- `cmd/server`：API 服务入口
+- `cmd/seed`：活动、奖池、概率、用户和管理员初始化
+- `controller/service/repository/model`：企业分层业务代码
+- `docs/schema.sql`：MySQL 8 建表脚本
+- `admin/`：Vue3 管理后台
+
+## 数据库启动
+
+1. 安装 MySQL 8，并创建可访问账号。
+2. 导入建表脚本：
+
+```bash
+mysql -uroot -p < docs/schema.sql
+```
+
+3. 修改 `config.yaml` 中的数据库 DSN 和 JWT secret。
+4. 初始化活动数据：
+
+```bash
+go run ./cmd/seed
+```
+
+开发账号：
+
+- H5 用户：`demo / 123456`
+- 管理员：`admin / 123456`
+
+## Backend 启动
+
+```bash
+go mod tidy
+go run ./cmd/server
+```
+
+默认地址：`http://127.0.0.1:8080`，健康检查：`GET /api/v1/health`。
+
+## Admin 启动
+
+```bash
+cd admin
+npm install
+npm run dev
+```
+
+默认地址：`http://127.0.0.1:5174`，开发代理将 `/api` 转发至 Backend `8080` 端口。
+
+生产构建：
+
+```bash
+npm run build
+```
+
+## H5 启动
+
+H5 位于独立仓库 `Azfrx/FlowerLottery` 的 `dev` 分支：
+
+```bash
+npm install
+npm run dev
+```
+
+H5 默认由 Vite 将 `/api` 转发至 `http://127.0.0.1:8080`。也可设置 `VITE_API_BASE_URL` 指向部署后的 `/api/v1`。
+
+## 验证
+
+```bash
+go test ./...
+cd admin && npm run build
+```
+
+核心规则以需求文档为准：六档金币兑换花瓣、白昼/星夜 1/10/30 抽、概率与金币保底点亮、18 朵提前停止退款、实际花瓣消耗进入榜单。
