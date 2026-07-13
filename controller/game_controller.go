@@ -125,3 +125,36 @@ func (x *GameController) NextRound(c *gin.Context) {
 	}
 	response.Success(c, v)
 }
+
+func (x *GameController) Preview(c *gin.Context) {
+	var q request.Action
+	if c.ShouldBindJSON(&q) != nil {
+		response.Error(c, 400, 10001, "参数错误")
+		return
+	}
+	v, e := x.s.Preview180(middleware.CurrentUserID(c), q.RequestID)
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	response.Success(c, v)
+}
+func (x *GameController) ConfirmPreview(c *gin.Context) {
+	var id uint64
+	fmt.Sscan(c.Param("id"), &id)
+	v, e := x.s.ConfirmPreview(middleware.CurrentUserID(c), id)
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	response.Success(c, v)
+}
+func (x *GameController) CancelPreview(c *gin.Context) {
+	var id uint64
+	fmt.Sscan(c.Param("id"), &id)
+	if e := x.s.CancelPreview(middleware.CurrentUserID(c), id); e != nil {
+		writeError(c, e)
+		return
+	}
+	response.Success(c, gin.H{})
+}

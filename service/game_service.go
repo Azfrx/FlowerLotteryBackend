@@ -436,3 +436,117 @@ func (s *GameService) NextRound(userID uint64) (*model.UserActivityRound, error)
 	})
 	return out, err
 }
+
+func (s *GameService) Preview180(userID uint64, requestID string) (*model.LotteryOrder, error) {
+	var out *model.LotteryOrder
+	err := s.repo.Tx(func(r *repository.GameRepository) error {
+		a, e := r.CurrentActivity()
+		if e != nil {
+			return e
+		}
+		n, e := r.NormalOrderCount(userID, a.ID)
+		if e != nil {
+			return e
+		}
+		if n > 0 {
+			return common.NewError(409, 13010, "仅首次抽奖前可使用先抽后付")
+		}
+		pool, e := r.Pool(a.ID, "day")
+		if e != nil {
+			return e
+		}
+		version, e := r.Version(pool.ID)
+		if e != nil {
+			return e
+		}
+		items, e := r.PoolRewards(version.ID)
+		if e != nil {
+			return e
+		}
+		round, e := r.RoundForUpdate(userID, a.ID)
+		if e != nil {
+			return e
+		}
+		order := &model.LotteryOrder{OrderNo: newOrderNo("PV"), UserID: userID, ActivityID: a.ID, PrizePoolID: pool.ID, PoolVersionID: version.ID, RoundID: round.ID, OrderType: "preview", RequestedDrawCount: 180, ExecutedDrawCount: 180, CoinPayment: 180 * 300, Status: 2, RequestID: requestID}
+		if e = r.Create(order); e != nil {
+			return e
+		}
+		for i := uint(1); i <= 180; i++ {
+			chosen, rv := pickReward(items)
+			d := model.LotteryDraw{LotteryOrderID: order.ID, DrawIndex: i, RewardItemID: chosen.RewardItemID, RewardQuantity: chosen.Quantity, RewardSnapshot: rewardJSON(chosen.RewardItem, chosen.Quantity), RandomValue: rv}
+			if e = r.Create(&d); e != nil {
+				return e
+			}
+		}
+		out = order
+		return nil
+	})
+	return out, err
+}
+func (s *GameService) ConfirmPreview(userID, orderID uint64) (*model.LotteryOrder, error) {
+	var out *model.LotteryOrder
+	err := s.repo.Tx(func(r *repository.GameRepository) error {
+		o, e := r.OrderByID(orderID, userID)
+		if e != nil {
+			return e
+		}
+		if o.OrderType != "preview" || o.Status != 2 {
+			return common.NewError(409, 13011, "预览订单状态无效")
+		}
+		wallet, e := r.WalletForUpdate(userID)
+		if e != nil {
+			return e
+		}
+		if wallet.CoinBalance < int64(o.CoinPayment) {
+			return common.ErrCoinInsufficient
+		}
+		before := wallet.CoinBalance
+		wallet.CoinBalance -= int64(o.CoinPayment)
+		draws, e := r.Draws(o.ID)
+		if e != nil {
+			return e
+		}
+		for _, d := range draws {
+			var item model.RewardItem
+			if e = r.DB.Where("id=?", d.RewardItemID).First(&item).Error; e != nil {
+				return e
+			}
+			if e = grantReward(r, userID, o.ActivityID, item, d.RewardQuantity, "preview", d.ID, wallet); e != nil {
+				return e
+			}
+		}
+		wallet.Version++
+		if e = r.Save(wallet); e != nil {
+			return e
+		}
+		o.Status = 1
+		o.PaidAt = &[]time.Time{time.Now()}[0]
+		if e = r.Save(o); e != nil {
+			return e
+		}
+		biz := o.ID
+		row := model.AssetTransaction{UserID: userID, ActivityID: &o.ActivityID, AssetType: "coin", ChangeAmount: -int64(o.CoinPayment), BalanceBefore: before, BalanceAfter: wallet.CoinBalance, ReasonCode: "preview_payment", BizType: "preview", BizID: &biz, RequestID: o.RequestID}
+		if e = r.Create(&row); e != nil {
+			return e
+		}
+		out = o
+		return nil
+	})
+	return out, err
+}
+func (s *GameService) CancelPreview(userID, orderID uint64) error {
+	return s.repo.Tx(func(r *repository.GameRepository) error {
+		o, e := r.OrderByID(orderID, userID)
+		if e != nil {
+			return e
+		}
+		if o.OrderType != "preview" || o.Status != 2 {
+			return common.NewError(409, 13011, "预览订单状态无效")
+		}
+		o.Status = 3
+		if e = r.Save(o); e != nil {
+			return e
+		}
+		return r.DB.Where("lottery_order_id=?", o.ID).Delete(&model.LotteryDraw{}).Error
+	})
+}

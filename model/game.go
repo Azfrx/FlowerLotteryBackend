@@ -155,6 +155,7 @@ type LotteryOrder struct {
 	LeaderboardScoreAdded uint64
 	Status                uint8
 	RequestID             string
+	PaidAt                *time.Time
 	ResultSnapshot        []byte
 	CreatedAt             time.Time
 	UpdatedAt             time.Time

@@ -27,8 +27,8 @@ const config: Record<string, { title: string; url: string }> = {
   rewards: { title: '奖励记录', url: '/rewards' },
   flowers: { title: '花朵进度', url: '/rounds' },
   leaderboard: { title: '榜单管理', url: '/leaderboard' },
-  activities: { title: '活动管理', url: '/lottery-orders' },
-  pools: { title: '奖池与概率', url: '/lottery-orders' },
+  activities: { title: '活动管理', url: '/activities' },
+  pools: { title: '奖池与概率', url: '/pools' },
   system: { title: '系统治理', url: '/users' },
 }
 const key = computed(() => String(route.path.split('/').pop()))

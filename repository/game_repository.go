@@ -147,3 +147,19 @@ func (r *GameRepository) PendingChests(roundID uint64) (int64, error) {
 	err := r.DB.Model(&model.UserChestOpportunity{}).Where("round_id=? AND status<>2", roundID).Count(&n).Error
 	return n, err
 }
+
+func (r *GameRepository) OrderByID(id, userID uint64) (*model.LotteryOrder, error) {
+	var v model.LotteryOrder
+	err := r.DB.Where("id=? AND user_id=?", id, userID).First(&v).Error
+	return &v, err
+}
+func (r *GameRepository) Draws(orderID uint64) ([]model.LotteryDraw, error) {
+	var v []model.LotteryDraw
+	err := r.DB.Where("lottery_order_id=?", orderID).Order("draw_index").Find(&v).Error
+	return v, err
+}
+func (r *GameRepository) NormalOrderCount(userID, activityID uint64) (int64, error) {
+	var n int64
+	err := r.DB.Model(&model.LotteryOrder{}).Where("user_id=? AND activity_id=? AND order_type='normal' AND status=1", userID, activityID).Count(&n).Error
+	return n, err
+}

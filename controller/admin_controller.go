@@ -88,3 +88,14 @@ func (a *AdminController) Leaderboard(c *gin.Context) {
 	a.db.Preload("User").Order("score DESC,reached_at ASC").Limit(200).Find(&v)
 	response.Success(c, v)
 }
+
+func (a *AdminController) Activities(c *gin.Context) {
+	var v []model.Activity
+	a.db.Order("id DESC").Find(&v)
+	response.Success(c, v)
+}
+func (a *AdminController) Pools(c *gin.Context) {
+	var v []model.PrizePool
+	a.db.Order("activity_id,sort_no").Find(&v)
+	response.Success(c, v)
+}
