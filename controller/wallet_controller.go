@@ -35,12 +35,36 @@ func (cn *WalletController) Exchange(c *gin.Context) {
 		response.Error(c, 400, 10001, "参数错误")
 		return
 	}
-	order, wallet, err := cn.service.Exchange(middleware.CurrentUserID(c), req.OptionID, req.RequestID)
+	order, wallet, err := cn.service.Exchange(
+		middleware.CurrentUserID(c), req.OptionID,
+		req.ExpectedPetalAmount, req.ExpectedCoinCost, req.RequestID,
+	)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
 	response.Success(c, gin.H{"order": order, "wallet": wallet})
+}
+func (cn *WalletController) PetalGiftPackStatus(c *gin.Context) {
+	purchased, err := cn.service.PetalGiftPackStatus(middleware.CurrentUserID(c))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	response.Success(c, gin.H{"purchased": purchased})
+}
+func (cn *WalletController) PurchasePetalGiftPack(c *gin.Context) {
+	var req request.Action
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Error(c, 400, 10001, "参数错误")
+		return
+	}
+	result, err := cn.service.PurchasePetalGiftPack(middleware.CurrentUserID(c), req.RequestID)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	response.Success(c, result)
 }
 func (cn *WalletController) Transactions(c *gin.Context) {
 	var page request.Page

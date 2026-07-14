@@ -8,6 +8,7 @@ import (
 	"flower-lottery-backend/common"
 	"flower-lottery-backend/model"
 	"flower-lottery-backend/repository"
+	"fmt"
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 	"time"
@@ -24,6 +25,7 @@ type StageRewardResult struct {
 
 type HomeData struct {
 	Activity                  *model.Activity          `json:"activity"`
+	ActivityContent           model.ActivityContent    `json:"activity_content"`
 	Wallet                    *model.UserWallet        `json:"wallet"`
 	Pools                     []model.PrizePool        `json:"pools"`
 	Round                     *model.UserActivityRound `json:"round"`
@@ -33,6 +35,7 @@ type HomeData struct {
 	OwnedRewardItemCodes      []string                 `json:"owned_reward_item_codes"`
 	ClaimedStageRewardRuleIDs []uint64                 `json:"claimed_stage_reward_rule_ids"`
 	PendingChests             []ChestOpportunityResult `json:"pending_chests"`
+	PendingPreview            *LotteryResult           `json:"pending_preview"`
 	LatestLeaderboardRewardID uint64                   `json:"latest_leaderboard_reward_id"`
 	ShowPreview               bool                     `json:"show_late_to_pay"`
 }
@@ -86,6 +89,14 @@ type HistoryRecordResult struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type LotteryRewardInventoryResult struct {
+	ItemCode     string
+	Name         string
+	Quantity     uint64
+	ImageURL     string
+	AnimationURL string
+}
+
 type LotteryHistoryResult struct {
 	Day    []HistoryRecordResult `json:"day"`
 	Night  []HistoryRecordResult `json:"night"`
@@ -94,6 +105,10 @@ type LotteryHistoryResult struct {
 
 func (s *GameService) Home(userID uint64) (*HomeData, error) {
 	a, err := s.repo.CurrentActivity()
+	if err != nil {
+		return nil, err
+	}
+	activityContent, err := parseActivityContent(a.RulesJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +141,7 @@ func (s *GameService) Home(userID uint64) (*HomeData, error) {
 	if err != nil {
 		return nil, err
 	}
-	featured, err := s.repo.RewardItemsByCodes([]string{"1203743", "1207751", "1207244"})
+	featured, err := s.repo.RewardItemsByCodes([]string{"1205251", "1207751", "1205470"})
 	if err != nil {
 		return nil, err
 	}
@@ -165,8 +180,27 @@ func (s *GameService) Home(userID uint64) (*HomeData, error) {
 	if err != nil {
 		return nil, err
 	}
+	normalOrderCount, err := s.repo.NormalOrderCount(userID, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	previewOrderCount, err := s.repo.PreviewOrderCount(userID, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	var pendingPreview *LotteryResult
+	pendingPreviewOrder, previewErr := s.repo.PendingPreviewOrder(userID, a.ID)
+	if previewErr == nil {
+		pendingPreview, err = lotteryResultForOrder(s.repo, pendingPreviewOrder, false)
+		if err != nil {
+			return nil, err
+		}
+	} else if previewErr != gorm.ErrRecordNotFound {
+		return nil, previewErr
+	}
 	return &HomeData{
 		Activity:                  a,
+		ActivityContent:           activityContent,
 		Wallet:                    w,
 		Pools:                     p,
 		Round:                     round,
@@ -176,9 +210,29 @@ func (s *GameService) Home(userID uint64) (*HomeData, error) {
 		OwnedRewardItemCodes:      ownedCodes,
 		ClaimedStageRewardRuleIDs: claimedStageIDs,
 		PendingChests:             pendingChestResults,
+		PendingPreview:            pendingPreview,
 		LatestLeaderboardRewardID: latestLeaderboardRewardID,
-		ShowPreview:               round.LitFlowerCount == 0,
+		ShowPreview:               normalOrderCount == 0 && previewOrderCount == 0,
 	}, nil
+}
+
+func parseActivityContent(raw []byte) (model.ActivityContent, error) {
+	var content model.ActivityContent
+	if len(raw) == 0 {
+		return content, nil
+	}
+	if err := json.Unmarshal(raw, &content); err != nil {
+		return content, fmt.Errorf("parse activity rules_json: %w", err)
+	}
+	return content, nil
+}
+
+func (s *GameService) ActivityContent() (model.ActivityContent, error) {
+	activity, err := s.repo.CurrentActivity()
+	if err != nil {
+		return model.ActivityContent{}, err
+	}
+	return parseActivityContent(activity.RulesJSON)
 }
 
 func chestRewardResult(item model.RewardItem, quantity uint64) ChestRewardResult {
@@ -372,6 +426,11 @@ func (s *GameService) Draw(userID uint64, poolCode string, count uint, requestID
 		if e != nil {
 			return e
 		}
+		if _, pendingPreviewErr := r.PendingPreviewOrder(userID, a.ID); pendingPreviewErr == nil {
+			return common.NewError(409, 13012, "请先处理先抽后付预览奖励")
+		} else if pendingPreviewErr != gorm.ErrRecordNotFound {
+			return pendingPreviewErr
+		}
 		round, e = advanceCompletedRoundForDraw(r, round)
 		if e != nil {
 			return e
@@ -446,7 +505,11 @@ func (s *GameService) Draw(userID uint64, poolCode string, count uint, requestID
 	if err != nil {
 		return nil, err
 	}
-	draws, err := s.repo.Draws(result.ID)
+	return lotteryResultForOrder(s.repo, result, true)
+}
+
+func lotteryResultForOrder(r *repository.GameRepository, order *model.LotteryOrder, includeUnlockedChests bool) (*LotteryResult, error) {
+	draws, err := r.Draws(order.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -461,15 +524,24 @@ func (s *GameService) Draw(userID uint64, poolCode string, count uint, requestID
 			AnimationURL: draw.RewardItem.AnimationURL,
 		})
 	}
-	unlockedChests, err := s.repo.ChestsUnlockedBetween(result.RoundID, result.FlowersBefore, result.FlowersAfter)
-	if err != nil {
-		return nil, err
+
+	unlockedChestResults := make([]ChestOpportunityResult, 0)
+	if includeUnlockedChests {
+		unlockedChests, chestErr := r.ChestsUnlockedBetween(order.RoundID, order.FlowersBefore, order.FlowersAfter)
+		if chestErr != nil {
+			return nil, chestErr
+		}
+		unlockedChestResults, chestErr = chestOpportunityResults(r, unlockedChests)
+		if chestErr != nil {
+			return nil, chestErr
+		}
 	}
-	unlockedChestResults, err := chestOpportunityResults(s.repo, unlockedChests)
-	if err != nil {
-		return nil, err
-	}
-	return &LotteryResult{LotteryOrder: result, Rewards: rewards, UnlockedChests: unlockedChestResults}, nil
+
+	return &LotteryResult{
+		LotteryOrder:   order,
+		Rewards:        rewards,
+		UnlockedChests: unlockedChestResults,
+	}, nil
 }
 func applyFlower(round *model.UserActivityRound, rules []model.FlowerLightRule, pool string, draw *model.LotteryDraw) bool {
 	lit := false
@@ -613,7 +685,7 @@ func (s *GameService) ChestHistory(userID uint64) ([]HistoryRecordResult, error)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.repo.ChestHistory(userID, activity.ID, 200)
+	rows, err := s.repo.ChestHistory(userID, activity.ID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -624,6 +696,28 @@ func (s *GameService) ChestHistory(userID uint64) ([]HistoryRecordResult, error)
 			Name:      row.RewardName,
 			Quantity:  row.Quantity,
 			CreatedAt: row.CreatedAt,
+		})
+	}
+	return result, nil
+}
+
+func (s *GameService) LotteryRewardInventory(userID uint64) ([]LotteryRewardInventoryResult, error) {
+	activity, err := s.repo.CurrentActivity()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.repo.LotteryRewardInventory(userID, activity.ID)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]LotteryRewardInventoryResult, 0, len(rows))
+	for _, row := range rows {
+		result = append(result, LotteryRewardInventoryResult{
+			ItemCode:     row.ItemCode,
+			Name:         row.Name,
+			Quantity:     row.Quantity,
+			ImageURL:     row.ImageURL,
+			AnimationURL: row.AnimationURL,
 		})
 	}
 	return result, nil
@@ -640,6 +734,8 @@ func (s *GameService) Leaderboard(userID uint64) ([]model.LeaderboardEntry, *mod
 }
 
 const trueLoveChoiceRewardCode = "1207751"
+
+var chestRewardItemCodes = []string{"1205251", "1205470", trueLoveChoiceRewardCode}
 
 var trueLoveChoiceItemCodes = map[string]struct{}{
 	"1207751": {},
@@ -661,7 +757,7 @@ func chestRulesWithFallback(r *repository.GameRepository, activityID uint64, che
 	if err != nil || len(rules) > 0 {
 		return rules, err
 	}
-	items, err := r.RewardItemsByCodes([]string{trueLoveChoiceRewardCode, "1203743", "1207244"})
+	items, err := r.RewardItemsByCodes(chestRewardItemCodes)
 	if err != nil {
 		return nil, err
 	}
@@ -1042,10 +1138,23 @@ func (s *GameService) NextRound(userID uint64) (*model.UserActivityRound, error)
 	return out, err
 }
 
-func (s *GameService) Preview180(userID uint64, requestID string) (*model.LotteryOrder, error) {
+const previewDrawCount uint = 180
+const previewPaymentPetals uint64 = 1800
+
+func (s *GameService) Preview180(userID uint64, requestID string) (*LotteryResult, error) {
 	var out *model.LotteryOrder
 	err := s.repo.Tx(func(r *repository.GameRepository) error {
+		if old, existingErr := r.ExistingPreviewOrder(userID, requestID); existingErr == nil {
+			out = old
+			return nil
+		} else if existingErr != gorm.ErrRecordNotFound {
+			return existingErr
+		}
 		a, e := r.CurrentActivity()
+		if e != nil {
+			return e
+		}
+		round, e := r.RoundForUpdate(userID, a.ID)
 		if e != nil {
 			return e
 		}
@@ -1055,6 +1164,13 @@ func (s *GameService) Preview180(userID uint64, requestID string) (*model.Lotter
 		}
 		if n > 0 {
 			return common.NewError(409, 13010, "仅首次抽奖前可使用先抽后付")
+		}
+		previewCount, e := r.PreviewOrderCount(userID, a.ID)
+		if e != nil {
+			return e
+		}
+		if previewCount > 0 {
+			return common.NewError(409, 13010, "先抽后付机会已使用")
 		}
 		pool, e := r.Pool(a.ID, "day")
 		if e != nil {
@@ -1068,30 +1184,54 @@ func (s *GameService) Preview180(userID uint64, requestID string) (*model.Lotter
 		if e != nil {
 			return e
 		}
-		round, e := r.RoundForUpdate(userID, a.ID)
+		rules, e := r.FlowerRules(a.ID)
 		if e != nil {
 			return e
 		}
-		order := &model.LotteryOrder{OrderNo: newOrderNo("PV"), UserID: userID, ActivityID: a.ID, PrizePoolID: pool.ID, PoolVersionID: version.ID, RoundID: round.ID, OrderType: "preview", RequestedDrawCount: 180, ExecutedDrawCount: 180, CoinPayment: 180 * 300, Status: 2, RequestID: requestID}
+		previewRound := *round
+		order := &model.LotteryOrder{
+			OrderNo:            newOrderNo("PV"),
+			UserID:             userID,
+			ActivityID:         a.ID,
+			PrizePoolID:        pool.ID,
+			PoolVersionID:      version.ID,
+			RoundID:            round.ID,
+			OrderType:          "preview",
+			RequestedDrawCount: previewDrawCount,
+			ExecutedDrawCount:  previewDrawCount,
+			PetalCost:          previewPaymentPetals,
+			FlowersBefore:      round.LitFlowerCount,
+			Status:             2,
+			RequestID:          requestID,
+		}
 		if e = r.Create(order); e != nil {
 			return e
 		}
-		for i := uint(1); i <= 180; i++ {
+		for i := uint(1); i <= previewDrawCount; i++ {
 			chosen, rv := pickReward(items)
 			d := model.LotteryDraw{LotteryOrderID: order.ID, DrawIndex: i, RewardItemID: chosen.RewardItemID, RewardQuantity: chosen.Quantity, RewardSnapshot: rewardJSON(chosen.RewardItem, chosen.Quantity), RandomValue: rv}
+			previewRound.CumulativeCoinValue += pool.CoinValuePerDraw
+			applyFlower(&previewRound, rules, "day", &d)
 			if e = r.Create(&d); e != nil {
 				return e
 			}
 		}
+		order.FlowersAfter = previewRound.LitFlowerCount
+		if e = r.Save(order); e != nil {
+			return e
+		}
 		out = order
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return lotteryResultForOrder(s.repo, out, false)
 }
-func (s *GameService) ConfirmPreview(userID, orderID uint64) (*model.LotteryOrder, error) {
+func (s *GameService) ConfirmPreview(userID, orderID uint64) (*LotteryResult, error) {
 	var out *model.LotteryOrder
 	err := s.repo.Tx(func(r *repository.GameRepository) error {
-		o, e := r.OrderByID(orderID, userID)
+		o, e := r.OrderByIDForUpdate(orderID, userID)
 		if e != nil {
 			return e
 		}
@@ -1102,46 +1242,98 @@ func (s *GameService) ConfirmPreview(userID, orderID uint64) (*model.LotteryOrde
 		if e != nil {
 			return e
 		}
-		if wallet.CoinBalance < int64(o.CoinPayment) {
-			return common.ErrCoinInsufficient
+		petalCost := o.PetalCost
+		if petalCost == 0 {
+			petalCost = previewPaymentPetals
 		}
-		before := wallet.CoinBalance
-		wallet.CoinBalance -= int64(o.CoinPayment)
+		if wallet.PetalBalance < int64(petalCost) {
+			return common.NewError(409, 12003, "花瓣余额不足")
+		}
+		round, e := r.RoundByIDForUpdate(o.RoundID)
+		if e != nil {
+			return e
+		}
+		if round.UserID != userID || round.LitFlowerCount != o.FlowersBefore {
+			return common.NewError(409, 13013, "当前花朵进度已变化，无法支付该预览订单")
+		}
+		var pool model.PrizePool
+		if e = r.DB.Where("id=? AND activity_id=?", o.PrizePoolID, o.ActivityID).First(&pool).Error; e != nil {
+			return e
+		}
+		petalBefore := wallet.PetalBalance
+		wallet.PetalBalance -= int64(petalCost)
 		draws, e := r.Draws(o.ID)
 		if e != nil {
 			return e
 		}
+		flowersBefore := round.LitFlowerCount
+		cumulativeCoinValue := round.CumulativeCoinValue
 		for _, d := range draws {
-			var item model.RewardItem
-			if e = r.DB.Where("id=?", d.RewardItemID).First(&item).Error; e != nil {
+			cumulativeCoinValue += pool.CoinValuePerDraw
+			if d.FlowerLit == 1 && d.FlowerPosition != nil {
+				if *d.FlowerPosition > round.LitFlowerCount {
+					round.LitFlowerCount = *d.FlowerPosition
+				}
+				record := model.FlowerLightRecord{
+					UserID:              userID,
+					ActivityID:          o.ActivityID,
+					RoundID:             round.ID,
+					LotteryDrawID:       d.ID,
+					FlowerPosition:      *d.FlowerPosition,
+					TriggerType:         map[bool]string{true: "guarantee", false: "probability"}[d.GuaranteeTriggered == 1],
+					CumulativeCoinValue: cumulativeCoinValue,
+				}
+				if e = r.Create(&record); e != nil {
+					return e
+				}
+			}
+			if e = grantReward(r, userID, o.ActivityID, d.RewardItem, d.RewardQuantity, "preview", d.ID, wallet); e != nil {
 				return e
 			}
-			if e = grantReward(r, userID, o.ActivityID, item, d.RewardQuantity, "preview", d.ID, wallet); e != nil {
-				return e
-			}
+		}
+		if o.FlowersAfter > round.LitFlowerCount {
+			round.LitFlowerCount = o.FlowersAfter
+		}
+		round.CumulativeCoinValue = cumulativeCoinValue
+		if e = reconcileUnlockedChestOpportunities(r, round, flowersBefore); e != nil {
+			return e
+		}
+		if round.LitFlowerCount >= 18 {
+			round.Status = 2
+		}
+		if e = r.Save(round); e != nil {
+			return e
 		}
 		wallet.Version++
 		if e = r.Save(wallet); e != nil {
 			return e
 		}
 		o.Status = 1
+		o.PetalCost = petalCost
+		o.LeaderboardScoreAdded = petalCost
 		o.PaidAt = &[]time.Time{time.Now()}[0]
 		if e = r.Save(o); e != nil {
 			return e
 		}
 		biz := o.ID
-		row := model.AssetTransaction{UserID: userID, ActivityID: &o.ActivityID, AssetType: "coin", ChangeAmount: -int64(o.CoinPayment), BalanceBefore: before, BalanceAfter: wallet.CoinBalance, ReasonCode: "preview_payment", BizType: "preview", BizID: &biz, RequestID: o.RequestID}
+		row := model.AssetTransaction{UserID: userID, ActivityID: &o.ActivityID, AssetType: "petal", ChangeAmount: -int64(petalCost), BalanceBefore: petalBefore, BalanceAfter: petalBefore - int64(petalCost), ReasonCode: "preview_payment", BizType: "preview", BizID: &biz, RequestID: o.RequestID}
 		if e = r.Create(&row); e != nil {
+			return e
+		}
+		if e = r.AddLeaderboard(o.ActivityID, userID, petalCost); e != nil {
 			return e
 		}
 		out = o
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return lotteryResultForOrder(s.repo, out, true)
 }
 func (s *GameService) CancelPreview(userID, orderID uint64) error {
 	return s.repo.Tx(func(r *repository.GameRepository) error {
-		o, e := r.OrderByID(orderID, userID)
+		o, e := r.OrderByIDForUpdate(orderID, userID)
 		if e != nil {
 			return e
 		}
@@ -1152,6 +1344,6 @@ func (s *GameService) CancelPreview(userID, orderID uint64) error {
 		if e = r.Save(o); e != nil {
 			return e
 		}
-		return r.DB.Where("lottery_order_id=?", o.ID).Delete(&model.LotteryDraw{}).Error
+		return nil
 	})
 }

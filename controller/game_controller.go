@@ -9,11 +9,24 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type GameController struct{ s *service.GameService }
+type GameController struct {
+	s             *service.GameService
+	announcements *service.RewardAnnouncementHub
+}
 
-func NewGameController(s *service.GameService) *GameController { return &GameController{s: s} }
+func NewGameController(s *service.GameService, announcements *service.RewardAnnouncementHub) *GameController {
+	return &GameController{s: s, announcements: announcements}
+}
 func (x *GameController) Home(c *gin.Context) {
 	v, e := x.s.Home(middleware.CurrentUserID(c))
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	response.Success(c, v)
+}
+func (x *GameController) ActivityContent(c *gin.Context) {
+	v, e := x.s.ActivityContent()
 	if e != nil {
 		writeError(c, e)
 		return
@@ -54,6 +67,14 @@ func (x *GameController) Orders(c *gin.Context) {
 }
 func (x *GameController) LotteryHistory(c *gin.Context) {
 	v, e := x.s.LotteryHistory(middleware.CurrentUserID(c))
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	response.Success(c, v)
+}
+func (x *GameController) LotteryRewards(c *gin.Context) {
+	v, e := x.s.LotteryRewardInventory(middleware.CurrentUserID(c))
 	if e != nil {
 		writeError(c, e)
 		return

@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const UserIDKey = "user_id"
+const (
+	UserIDKey  = "user_id"
+	AdminIDKey = "admin_id"
+)
 
 func UserAuth(tokens *tokenjwt.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -31,7 +34,7 @@ func AdminAuth(tokens *tokenjwt.Manager) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		header := c.GetHeader("Authorization")
 		parts := strings.SplitN(header, " ", 2)
-		if len(parts) != 2 {
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
 			writeAuthError(c, common.ErrUnauthorized)
 			return
 		}
@@ -40,12 +43,22 @@ func AdminAuth(tokens *tokenjwt.Manager) gin.HandlerFunc {
 			writeAuthError(c, common.ErrUnauthorized)
 			return
 		}
+		c.Set(AdminIDKey, claims.SubjectID)
 		c.Next()
 	}
 }
 
 func CurrentUserID(c *gin.Context) uint64 {
 	value, ok := c.Get(UserIDKey)
+	if !ok {
+		return 0
+	}
+	id, _ := value.(uint64)
+	return id
+}
+
+func CurrentAdminID(c *gin.Context) uint64 {
+	value, ok := c.Get(AdminIDKey)
 	if !ok {
 		return 0
 	}

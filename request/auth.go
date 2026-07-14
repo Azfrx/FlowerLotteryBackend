@@ -5,7 +5,7 @@ type Login struct {
 	Password string `json:"password" binding:"required,min=6,max=72"`
 }
 type Register struct {
-	UserID    string `json:"user_id" binding:"required,min=3,max=64"`
+	UserID    string `json:"user_id" binding:"required,min=3,max=64,alphanum"`
 	Nickname  string `json:"nickname" binding:"required,max=64"`
 	AvatarURL string `json:"avatar_url" binding:"omitempty,url,max=512"`
 	Password  string `json:"password" binding:"required,min=6,max=72"`
@@ -21,8 +21,10 @@ type Refresh struct {
 	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 type Exchange struct {
-	OptionID  uint64 `json:"option_id" binding:"required"`
-	RequestID string `json:"request_id" binding:"required,max=64"`
+	OptionID            uint64 `json:"option_id" binding:"required"`
+	ExpectedPetalAmount uint64 `json:"expected_petal_amount" binding:"required"`
+	ExpectedCoinCost    uint64 `json:"expected_coin_cost" binding:"required"`
+	RequestID           string `json:"request_id" binding:"required,max=64"`
 }
 type Page struct {
 	Page     int `form:"page"`

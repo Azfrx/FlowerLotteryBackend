@@ -16,6 +16,7 @@ type authServiceTestRepository struct {
 	userIDs       map[string]uint64
 	refreshTokens map[string]*model.RefreshToken
 	walletCreated bool
+	walletCoins   int64
 	tokensRevoked bool
 	nextUserID    uint64
 }
@@ -46,13 +47,17 @@ func (r *authServiceTestRepository) FindByID(id uint64) (*model.User, error) {
 	return &copy, nil
 }
 
-func (r *authServiceTestRepository) CreateUser(user *model.User) error {
+func (r *authServiceTestRepository) CreateUser(user *model.User, initialCoinBalance int64) error {
+	if _, exists := r.userIDs[user.UserNo]; exists {
+		return gorm.ErrDuplicatedKey
+	}
 	user.ID = r.nextUserID
 	r.nextUserID++
 	copy := *user
 	r.users[user.ID] = &copy
 	r.userIDs[user.UserNo] = user.ID
 	r.walletCreated = true
+	r.walletCoins = initialCoinBalance
 	return nil
 }
 
@@ -120,15 +125,18 @@ func TestAuthServiceRegisterCreatesLoginReadyUser(t *testing.T) {
 	repository := newAuthServiceTestRepository()
 	service := newAuthServiceForTest(repository)
 
-	user, pair, err := service.Register("new_user", "新用户", "", "123456")
+	user, pair, err := service.Register("newuser01", "新用户", "", "123456")
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}
-	if user.UserNo != "new_user" || user.Nickname != "新用户" {
+	if user.UserNo != "newuser01" || user.Nickname != "新用户" {
 		t.Fatalf("unexpected registered user: %+v", user)
 	}
 	if !repository.walletCreated {
 		t.Fatal("registration did not create a wallet")
+	}
+	if repository.walletCoins != newUserInitialCoinBalance {
+		t.Fatalf("wallet initial coins = %d, want %d", repository.walletCoins, newUserInitialCoinBalance)
 	}
 	if pair.AccessToken == "" || pair.RefreshToken == "" {
 		t.Fatal("registration did not return a login token pair")
@@ -138,10 +146,21 @@ func TestAuthServiceRegisterCreatesLoginReadyUser(t *testing.T) {
 	}
 }
 
+func TestAuthServiceRegisterRejectsNonAlphanumericAccount(t *testing.T) {
+	repository := newAuthServiceTestRepository()
+	service := newAuthServiceForTest(repository)
+
+	for _, account := range []string{"ab", "flower_user", "花愿账号", "account-01"} {
+		if _, _, err := service.Register(account, "新用户", "", "123456"); err != common.ErrAccountInvalid {
+			t.Fatalf("Register(%q) error = %v, want %v", account, err, common.ErrAccountInvalid)
+		}
+	}
+}
+
 func TestAuthServiceProfileAndPasswordUpdates(t *testing.T) {
 	repository := newAuthServiceTestRepository()
 	service := newAuthServiceForTest(repository)
-	user, _, err := service.Register("profile_user", "旧昵称", "", "123456")
+	user, _, err := service.Register("profileuser", "旧昵称", "", "123456")
 	if err != nil {
 		t.Fatalf("Register() error = %v", err)
 	}

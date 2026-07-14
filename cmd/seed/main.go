@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"flag"
 	"flower-lottery-backend/initialize"
 	"flower-lottery-backend/model"
 	"flower-lottery-backend/utils"
@@ -11,6 +13,9 @@ import (
 )
 
 func main() {
+	contentOnly := flag.Bool("content-only", false, "only update activities.rules_json")
+	flag.Parse()
+
 	cfg, e := initialize.Config()
 	if e != nil {
 		log.Fatal(e)
@@ -19,10 +24,26 @@ func main() {
 	if e != nil {
 		log.Fatal(e)
 	}
+	rulesJSON, e := json.Marshal(activityContentSeed())
+	if e != nil {
+		log.Fatal(e)
+	}
+	if *contentOnly {
+		var activity model.Activity
+		if e := db.Where("code=? AND deleted_at IS NULL", "flower-wish").First(&activity).Error; e != nil {
+			log.Fatal(e)
+		}
+		if e := db.Model(&activity).Update("rules_json", rulesJSON).Error; e != nil {
+			log.Fatal(e)
+		}
+		fmt.Println("activity content seed completed: flower-wish")
+		return
+	}
+
 	hash, _ := utils.HashPassword("123456")
 	e = db.Transaction(func(tx *gorm.DB) error {
-		a := model.Activity{Code: "flower-wish", Name: "花愿奇遇", Status: 2, StartsAt: time.Now().Add(-24 * time.Hour), EndsAt: time.Now().AddDate(0, 1, 0), LeaderboardFreezesAt: time.Now().AddDate(0, 1, 0), Timezone: "Asia/Shanghai"}
-		if e := tx.Where("code=?", a.Code).FirstOrCreate(&a).Error; e != nil {
+		a := model.Activity{Code: "flower-wish", Name: "花愿奇遇", Status: 2, StartsAt: time.Now().Add(-24 * time.Hour), EndsAt: time.Now().AddDate(0, 1, 0), LeaderboardFreezesAt: time.Now().AddDate(0, 1, 0), Timezone: "Asia/Shanghai", RulesJSON: rulesJSON}
+		if e := tx.Where("code=?", a.Code).Assign(map[string]any{"rules_json": rulesJSON}).FirstOrCreate(&a).Error; e != nil {
 			return e
 		}
 		demoAvatar := "https://api.dicebear.com/9.x/thumbs/svg?seed=FlowerDemo"
@@ -240,7 +261,7 @@ func main() {
 		if e := tx.Model(&model.ChestRewardRule{}).Where("activity_id=?", a.ID).Update("status", 0).Error; e != nil {
 			return e
 		}
-		chestRewardCodes := []string{"1207751", "1203743", "1207244"}
+		chestRewardCodes := []string{"1205251", "1205470", "1207751"}
 		for chestNo := uint8(1); chestNo <= 3; chestNo++ {
 			for _, itemCode := range chestRewardCodes {
 				item := itemByCode[itemCode]

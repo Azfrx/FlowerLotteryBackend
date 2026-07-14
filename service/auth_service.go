@@ -11,8 +11,9 @@ import (
 	"gorm.io/gorm"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
+
+const newUserInitialCoinBalance int64 = 1_000_000
 
 type AuthService struct {
 	users  repository.UserRepository
@@ -23,17 +24,18 @@ type AuthService struct {
 func NewAuthService(users repository.UserRepository, tokens *tokenjwt.Manager) *AuthService {
 	return &AuthService{users: users, tokens: tokens, now: time.Now}
 }
+
 func (s *AuthService) Register(userNo, nickname, avatarURL, password string) (*model.User, tokenjwt.Pair, error) {
 	userNo = strings.TrimSpace(userNo)
 	nickname = strings.TrimSpace(nickname)
-	if length := utf8.RuneCountInString(userNo); length < 3 || length > 64 {
-		return nil, tokenjwt.Pair{}, common.ErrUserIDInvalid
+	if !utils.ValidAccount(userNo) {
+		return nil, tokenjwt.Pair{}, common.ErrAccountInvalid
 	}
 	if nickname == "" {
 		return nil, tokenjwt.Pair{}, common.ErrNicknameRequired
 	}
 	if _, err := s.users.FindByUserNo(userNo); err == nil {
-		return nil, tokenjwt.Pair{}, common.ErrUserExists
+		return nil, tokenjwt.Pair{}, common.ErrAccountExists
 	} else if err != gorm.ErrRecordNotFound {
 		return nil, tokenjwt.Pair{}, err
 	}
@@ -48,9 +50,9 @@ func (s *AuthService) Register(userNo, nickname, avatarURL, password string) (*m
 		PasswordHash: hash,
 		Status:       1,
 	}
-	if err = s.users.CreateUser(user); err != nil {
+	if err = s.users.CreateUser(user, newUserInitialCoinBalance); err != nil {
 		if isDuplicateUserError(err) {
-			return nil, tokenjwt.Pair{}, common.ErrUserExists
+			return nil, tokenjwt.Pair{}, common.ErrAccountExists
 		}
 		return nil, tokenjwt.Pair{}, err
 	}

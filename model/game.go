@@ -44,6 +44,8 @@ type PrizePoolVersion struct {
 	Status      uint8
 	EffectiveAt *time.Time
 	TotalWeight uint64
+	PublishedBy *uint64
+	Remark      string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }

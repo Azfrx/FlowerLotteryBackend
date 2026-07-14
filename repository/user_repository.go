@@ -9,7 +9,7 @@ import (
 type UserRepository interface {
 	FindByUserNo(userNo string) (*model.User, error)
 	FindByID(id uint64) (*model.User, error)
-	CreateUser(user *model.User) error
+	CreateUser(user *model.User, initialCoinBalance int64) error
 	UpdateProfile(id uint64, nickname string) error
 	UpdateAvatar(id uint64, avatarURL string) error
 	UpdatePassword(id uint64, passwordHash string) error
@@ -32,12 +32,32 @@ func (r *userRepository) FindByID(id uint64) (*model.User, error) {
 	err := r.db.Where("id = ? AND deleted_at IS NULL", id).First(&v).Error
 	return &v, err
 }
-func (r *userRepository) CreateUser(user *model.User) error {
+func (r *userRepository) CreateUser(user *model.User, initialCoinBalance int64) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(user).Error; err != nil {
 			return err
 		}
-		return tx.Create(&model.UserWallet{UserID: user.ID}).Error
+		wallet := model.UserWallet{UserID: user.ID, CoinBalance: initialCoinBalance}
+		if err := tx.Create(&wallet).Error; err != nil {
+			return err
+		}
+		if initialCoinBalance <= 0 {
+			return nil
+		}
+
+		registrationID := user.ID
+		return tx.Create(&model.AssetTransaction{
+			UserID:        user.ID,
+			AssetType:     "coin",
+			ChangeAmount:  initialCoinBalance,
+			BalanceBefore: 0,
+			BalanceAfter:  initialCoinBalance,
+			ReasonCode:    "registration_bonus",
+			BizType:       "registration",
+			BizID:         &registrationID,
+			RequestID:     "registration-" + user.UserNo,
+			Remark:        "新用户初始金币",
+		}).Error
 	})
 }
 func (r *userRepository) UpdateProfile(id uint64, nickname string) error {

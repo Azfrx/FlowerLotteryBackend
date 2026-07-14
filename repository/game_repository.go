@@ -29,6 +29,15 @@ type ChestHistoryRow struct {
 	CreatedAt  time.Time
 }
 
+type LotteryRewardInventoryRow struct {
+	ItemCode     string
+	Name         string
+	Quantity     uint64
+	ImageURL     string
+	AnimationURL string
+	LastWonAt    time.Time
+}
+
 func NewGameRepository(db *gorm.DB) *GameRepository { return &GameRepository{DB: db} }
 func (r *GameRepository) Tx(fn func(*GameRepository) error) error {
 	return r.DB.Transaction(func(tx *gorm.DB) error { return fn(&GameRepository{DB: tx}) })
@@ -93,12 +102,18 @@ func (r *GameRepository) ClaimedStageRewardRuleIDs(roundID uint64) ([]uint64, er
 }
 func (r *GameRepository) StageDisplayRound(userID, activityID uint64) (*model.UserActivityRound, error) {
 	var v model.UserActivityRound
-	err := r.DB.Where(
+	result := r.DB.Where(
 		"user_id=? AND activity_id=? AND EXISTS (SELECT 1 FROM stage_reward_rules s WHERE s.activity_id=user_activity_rounds.activity_id AND s.status=1 AND s.required_flowers<=user_activity_rounds.lit_flower_count AND NOT EXISTS (SELECT 1 FROM user_stage_reward_claims c WHERE c.round_id=user_activity_rounds.id AND c.stage_reward_rule_id=s.id AND c.status=1))",
 		userID,
 		activityID,
-	).Order("round_no ASC").First(&v).Error
-	return &v, err
+	).Order("round_no ASC").Limit(1).Find(&v)
+	if result.Error != nil {
+		return &v, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return &v, gorm.ErrRecordNotFound
+	}
+	return &v, nil
 }
 func (r *GameRepository) LatestLeaderboardRewardID(userID, activityID uint64) (uint64, error) {
 	var id uint64
@@ -125,6 +140,11 @@ func (r *GameRepository) RoundForUpdate(userID, activityID uint64) (*model.UserA
 func (r *GameRepository) ExistingOrder(userID uint64, requestID string) (*model.LotteryOrder, error) {
 	var v model.LotteryOrder
 	err := r.DB.Where("user_id=? AND order_type='normal' AND request_id=?", userID, requestID).First(&v).Error
+	return &v, err
+}
+func (r *GameRepository) ExistingPreviewOrder(userID uint64, requestID string) (*model.LotteryOrder, error) {
+	var v model.LotteryOrder
+	err := r.DB.Where("user_id=? AND order_type='preview' AND request_id=?", userID, requestID).First(&v).Error
 	return &v, err
 }
 func (r *GameRepository) Save(v any) error   { return r.DB.Save(v).Error }
@@ -189,12 +209,27 @@ func (r *GameRepository) FlowerHistory(userID, activityID uint64, limit int) ([]
 }
 func (r *GameRepository) ChestHistory(userID, activityID uint64, limit int) ([]ChestHistoryRow, error) {
 	var v []ChestHistoryRow
-	err := r.DB.Table("user_rewards AS user_reward").
+	query := r.DB.Table("user_rewards AS user_reward").
 		Select("user_reward.id AS id, item.name AS reward_name, user_reward.quantity AS quantity, COALESCE(user_reward.granted_at,user_reward.created_at) AS created_at").
 		Joins("JOIN reward_items AS item ON item.id=user_reward.reward_item_id").
-		Where("user_reward.user_id=? AND user_reward.activity_id=? AND user_reward.source_type='chest' AND user_reward.status IN (1,2)", userID, activityID).
-		Order("user_reward.id DESC").
-		Limit(limit).
+		Where("user_reward.user_id=? AND user_reward.activity_id=? AND user_reward.status IN (1,2) AND item.name LIKE ?", userID, activityID, "%戒指%").
+		Order("user_reward.id DESC")
+	if limit > 0 {
+		query = query.Limit(limit)
+	}
+	err := query.Scan(&v).Error
+	return v, err
+}
+
+func (r *GameRepository) LotteryRewardInventory(userID, activityID uint64) ([]LotteryRewardInventoryRow, error) {
+	var v []LotteryRewardInventoryRow
+	err := r.DB.Table("lottery_draws AS draw").
+		Select("item.item_code AS item_code, item.name AS name, SUM(draw.reward_quantity) AS quantity, item.image_url AS image_url, item.animation_url AS animation_url, MAX(lottery_order.created_at) AS last_won_at").
+		Joins("JOIN lottery_orders AS lottery_order ON lottery_order.id=draw.lottery_order_id").
+		Joins("JOIN reward_items AS item ON item.id=draw.reward_item_id").
+		Where("lottery_order.user_id=? AND lottery_order.activity_id=? AND lottery_order.status=1 AND lottery_order.order_type IN ?", userID, activityID, []string{"normal", "preview"}).
+		Group("item.id, item.item_code, item.name, item.image_url, item.animation_url").
+		Order("last_won_at DESC, item.item_code ASC").
 		Scan(&v).Error
 	return v, err
 }
@@ -324,6 +359,11 @@ func (r *GameRepository) OrderByID(id, userID uint64) (*model.LotteryOrder, erro
 	err := r.DB.Where("id=? AND user_id=?", id, userID).First(&v).Error
 	return &v, err
 }
+func (r *GameRepository) OrderByIDForUpdate(id, userID uint64) (*model.LotteryOrder, error) {
+	var v model.LotteryOrder
+	err := r.DB.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND user_id=?", id, userID).First(&v).Error
+	return &v, err
+}
 func (r *GameRepository) Draws(orderID uint64) ([]model.LotteryDraw, error) {
 	var v []model.LotteryDraw
 	err := r.DB.Preload("RewardItem").Where("lottery_order_id=?", orderID).Order("draw_index").Find(&v).Error
@@ -333,4 +373,18 @@ func (r *GameRepository) NormalOrderCount(userID, activityID uint64) (int64, err
 	var n int64
 	err := r.DB.Model(&model.LotteryOrder{}).Where("user_id=? AND activity_id=? AND order_type='normal' AND status=1", userID, activityID).Count(&n).Error
 	return n, err
+}
+func (r *GameRepository) PreviewOrderCount(userID, activityID uint64) (int64, error) {
+	var n int64
+	err := r.DB.Model(&model.LotteryOrder{}).
+		Where("user_id=? AND activity_id=? AND order_type='preview' AND status IN (1,2,3,4)", userID, activityID).
+		Count(&n).Error
+	return n, err
+}
+func (r *GameRepository) PendingPreviewOrder(userID, activityID uint64) (*model.LotteryOrder, error) {
+	var v model.LotteryOrder
+	err := r.DB.Where("user_id=? AND activity_id=? AND order_type='preview' AND status=2", userID, activityID).
+		Order("id DESC").
+		First(&v).Error
+	return &v, err
 }

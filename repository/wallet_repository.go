@@ -5,12 +5,15 @@ import (
 	"flower-lottery-backend/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"time"
 )
 
 type WalletRepository interface {
 	Get(userID uint64) (*model.UserWallet, error)
 	ListOptions() ([]model.ExchangeOption, error)
-	Exchange(userID, optionID uint64, requestID, orderNo string) (*model.ExchangeOrder, *model.UserWallet, error)
+	Exchange(userID, optionID, expectedPetalAmount, expectedCoinCost uint64, requestID, orderNo string) (*model.ExchangeOrder, *model.UserWallet, error)
+	PetalGiftPackPurchased(userID uint64) (bool, error)
+	PurchasePetalGiftPack(userID, petalAmount uint64, requestID string) (*model.UserWallet, error)
 	ListTransactions(userID uint64, page, pageSize int) ([]model.AssetTransaction, int64, error)
 }
 type walletRepository struct{ db *gorm.DB }
@@ -23,10 +26,15 @@ func (r *walletRepository) Get(userID uint64) (*model.UserWallet, error) {
 }
 func (r *walletRepository) ListOptions() ([]model.ExchangeOption, error) {
 	var v []model.ExchangeOption
-	err := r.db.Where("status = 1 AND deleted_at IS NULL").Order("sort_no,id").Find(&v).Error
+	activityID, err := currentActivityID(r.db)
+	if err != nil {
+		return nil, err
+	}
+	err = r.db.Where("activity_id = ? AND status = 1 AND deleted_at IS NULL", activityID).
+		Order("sort_no,id").Find(&v).Error
 	return v, err
 }
-func (r *walletRepository) Exchange(userID, optionID uint64, requestID, orderNo string) (*model.ExchangeOrder, *model.UserWallet, error) {
+func (r *walletRepository) Exchange(userID, optionID, expectedPetalAmount, expectedCoinCost uint64, requestID, orderNo string) (*model.ExchangeOrder, *model.UserWallet, error) {
 	var order model.ExchangeOrder
 	var wallet model.UserWallet
 	err := r.db.Transaction(func(tx *gorm.DB) error {
@@ -35,9 +43,16 @@ func (r *walletRepository) Exchange(userID, optionID uint64, requestID, orderNo 
 		} else if err != gorm.ErrRecordNotFound {
 			return err
 		}
-		var option model.ExchangeOption
-		if err := tx.Where("id = ? AND status = 1 AND deleted_at IS NULL", optionID).First(&option).Error; err != nil {
+		activityID, err := currentActivityID(tx)
+		if err != nil {
 			return err
+		}
+		var option model.ExchangeOption
+		if err := tx.Where("id = ? AND activity_id = ? AND status = 1 AND deleted_at IS NULL", optionID, activityID).First(&option).Error; err != nil {
+			return err
+		}
+		if option.PetalAmount != expectedPetalAmount || option.CoinCost != expectedCoinCost {
+			return ErrExchangeOptionChanged
 		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id = ?", userID).First(&wallet).Error; err != nil {
 			return err
@@ -64,6 +79,78 @@ func (r *walletRepository) Exchange(userID, optionID uint64, requestID, orderNo 
 	})
 	return &order, &wallet, err
 }
+
+func currentActivityID(db *gorm.DB) (uint64, error) {
+	var activity model.Activity
+	now := time.Now()
+	if err := db.Where(
+		"status = 2 AND starts_at <= ? AND ends_at > ? AND deleted_at IS NULL",
+		now,
+		now,
+	).First(&activity).Error; err != nil {
+		return 0, err
+	}
+	return activity.ID, nil
+}
+
+func (r *walletRepository) PetalGiftPackPurchased(userID uint64) (bool, error) {
+	activityID, err := currentActivityID(r.db)
+	if err != nil {
+		return false, err
+	}
+	var count int64
+	err = r.db.Model(&model.AssetTransaction{}).
+		Where("user_id=? AND activity_id=? AND reason_code=?", userID, activityID, "petal_gift_pack").
+		Count(&count).Error
+	return count > 0, err
+}
+
+func (r *walletRepository) PurchasePetalGiftPack(userID, petalAmount uint64, requestID string) (*model.UserWallet, error) {
+	var wallet model.UserWallet
+	err := r.db.Transaction(func(tx *gorm.DB) error {
+		activityID, err := currentActivityID(tx)
+		if err != nil {
+			return err
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("user_id=?", userID).First(&wallet).Error; err != nil {
+			return err
+		}
+		var existingPurchase model.AssetTransaction
+		err = tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("user_id=? AND activity_id=? AND reason_code=?", userID, activityID, "petal_gift_pack").
+			Order("id DESC").
+			First(&existingPurchase).Error
+		if err == nil {
+			return ErrPetalGiftPackPurchased
+		}
+		if err != gorm.ErrRecordNotFound {
+			return err
+		}
+
+		petalBefore := wallet.PetalBalance
+		wallet.PetalBalance += int64(petalAmount)
+		wallet.Version++
+		if err := tx.Save(&wallet).Error; err != nil {
+			return err
+		}
+
+		activity := activityID
+		transaction := model.AssetTransaction{
+			UserID:        userID,
+			ActivityID:    &activity,
+			AssetType:     "petal",
+			ChangeAmount:  int64(petalAmount),
+			BalanceBefore: petalBefore,
+			BalanceAfter:  wallet.PetalBalance,
+			ReasonCode:    "petal_gift_pack",
+			BizType:       "gift_pack",
+			RequestID:     requestID,
+			Remark:        "30元花瓣特惠礼包",
+		}
+		return tx.Create(&transaction).Error
+	})
+	return &wallet, err
+}
 func (r *walletRepository) ListTransactions(userID uint64, page, pageSize int) ([]model.AssetTransaction, int64, error) {
 	var list []model.AssetTransaction
 	var total int64
@@ -76,3 +163,5 @@ func (r *walletRepository) ListTransactions(userID uint64, page, pageSize int) (
 }
 
 var ErrInsufficientBalance = errors.New("insufficient balance")
+var ErrPetalGiftPackPurchased = errors.New("petal gift pack already purchased")
+var ErrExchangeOptionChanged = errors.New("exchange option changed")
