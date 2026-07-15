@@ -23,9 +23,18 @@ func NewWalletService(repo repository.WalletRepository) *WalletService {
 	return &WalletService{repo: repo}
 }
 func (s *WalletService) Get(userID uint64) (*model.UserWallet, error) { return s.repo.Get(userID) }
-func (s *WalletService) Options() ([]model.ExchangeOption, error)     { return s.repo.ListOptions() }
+func (s *WalletService) Options() ([]model.ExchangeOption, error) {
+	options, err := s.repo.ListOptions()
+	if errors.Is(err, repository.ErrActivityNotPlayable) {
+		return nil, common.ErrActivityReadOnly
+	}
+	return options, err
+}
 func (s *WalletService) Exchange(userID, optionID, expectedPetalAmount, expectedCoinCost uint64, requestID string) (*model.ExchangeOrder, *model.UserWallet, error) {
 	order, wallet, err := s.repo.Exchange(userID, optionID, expectedPetalAmount, expectedCoinCost, requestID, newOrderNo("EX"))
+	if errors.Is(err, repository.ErrActivityNotPlayable) {
+		return nil, nil, common.ErrActivityReadOnly
+	}
 	if errors.Is(err, repository.ErrInsufficientBalance) {
 		return nil, nil, common.ErrCoinInsufficient
 	}
@@ -41,10 +50,17 @@ func (s *WalletService) Exchange(userID, optionID, expectedPetalAmount, expected
 	return order, wallet, err
 }
 func (s *WalletService) PetalGiftPackStatus(userID uint64) (bool, error) {
-	return s.repo.PetalGiftPackPurchased(userID)
+	purchased, err := s.repo.PetalGiftPackPurchased(userID)
+	if errors.Is(err, repository.ErrActivityNotPlayable) {
+		return false, common.ErrActivityReadOnly
+	}
+	return purchased, err
 }
 func (s *WalletService) PurchasePetalGiftPack(userID uint64, requestID string) (*PetalGiftPackResult, error) {
 	wallet, err := s.repo.PurchasePetalGiftPack(userID, PetalGiftPackPetalAmount, requestID)
+	if errors.Is(err, repository.ErrActivityNotPlayable) {
+		return nil, common.ErrActivityReadOnly
+	}
 	if errors.Is(err, repository.ErrPetalGiftPackPurchased) {
 		return nil, common.ErrPetalGiftPackPurchased
 	}

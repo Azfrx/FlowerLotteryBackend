@@ -5,6 +5,7 @@ import (
 	"flower-lottery-backend/middleware"
 	"flower-lottery-backend/model"
 	tokenjwt "flower-lottery-backend/pkg/jwt"
+	"flower-lottery-backend/repository"
 	"flower-lottery-backend/response"
 	"flower-lottery-backend/service"
 	"flower-lottery-backend/utils"
@@ -87,12 +88,16 @@ type adminRoundRow struct {
 }
 
 type adminLeaderboardRow struct {
-	ID        uint64    `gorm:"column:id" json:"id"`
-	Rank      int64     `gorm:"column:rank_no" json:"rank"`
-	UserID    string    `gorm:"column:user_id" json:"user_id"`
-	Nickname  string    `gorm:"column:nickname" json:"nickname"`
-	Score     uint64    `gorm:"column:score" json:"score"`
-	UpdatedAt time.Time `gorm:"column:updated_at" json:"updated_at"`
+	ID           string     `gorm:"column:id" json:"id"`
+	ActivityID   uint64     `gorm:"column:activity_id" json:"activity_id"`
+	ActivityName string     `gorm:"column:activity_name" json:"activity_name"`
+	Rank         int64      `gorm:"column:rank_no" json:"rank"`
+	UserID       string     `gorm:"column:user_id" json:"user_id"`
+	Nickname     string     `gorm:"column:nickname" json:"nickname"`
+	Score        uint64     `gorm:"column:score" json:"score"`
+	FrozenAt     *time.Time `gorm:"column:frozen_at" json:"frozen_at"`
+	IsFrozen     bool       `gorm:"column:is_frozen" json:"is_frozen"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at" json:"updated_at"`
 }
 
 type adminActivityRow struct {
@@ -261,13 +266,42 @@ func (a *AdminController) Rounds(c *gin.Context) {
 	response.Success(c, list)
 }
 func (a *AdminController) Leaderboard(c *gin.Context) {
+	if err := repository.NewGameRepository(a.db).FreezeDueLeaderboards(time.Now()); err != nil {
+		writeError(c, err)
+		return
+	}
 	var list []adminLeaderboardRow
-	err := a.db.Table("leaderboard_entries AS e").
-		Select("e.id AS id,ROW_NUMBER() OVER (PARTITION BY e.activity_id ORDER BY e.score DESC,e.reached_at ASC,e.user_id ASC) AS rank_no,COALESCE(u.user_no,CAST(e.user_id AS CHAR)) AS user_id,COALESCE(u.nickname,'') AS nickname,e.score AS score,e.updated_at AS updated_at").
-		Joins("LEFT JOIN users AS u ON u.id=e.user_id").
-		Order("e.activity_id ASC,e.score DESC,e.reached_at ASC,e.user_id ASC").
-		Limit(200).
-		Scan(&list).Error
+	err := a.db.Raw(`
+		SELECT ranked.id,ranked.activity_id,ranked.activity_name,ranked.rank_no,
+			ranked.user_id,ranked.nickname,ranked.score,ranked.frozen_at,
+			ranked.is_frozen,ranked.updated_at
+		FROM (
+			SELECT CONCAT('snapshot-',s.activity_id,'-',s.id) AS id,
+				s.activity_id AS activity_id,a.name AS activity_name,s.rank_no AS rank_no,
+				COALESCE(u.user_no,CAST(s.user_id AS CHAR)) AS user_id,
+				COALESCE(u.nickname,'') AS nickname,s.score AS score,
+				s.frozen_at AS frozen_at,1 AS is_frozen,s.frozen_at AS updated_at
+			FROM leaderboard_snapshots AS s
+			JOIN activities AS a ON a.id=s.activity_id
+			LEFT JOIN users AS u ON u.id=s.user_id
+			UNION ALL
+			SELECT CONCAT('live-',e.activity_id,'-',e.id) AS id,
+				e.activity_id AS activity_id,a.name AS activity_name,
+				ROW_NUMBER() OVER (
+					PARTITION BY e.activity_id
+					ORDER BY e.score DESC,e.reached_at ASC,e.user_id ASC
+				) AS rank_no,
+				COALESCE(u.user_no,CAST(e.user_id AS CHAR)) AS user_id,
+				COALESCE(u.nickname,'') AS nickname,e.score AS score,
+				NULL AS frozen_at,0 AS is_frozen,e.updated_at AS updated_at
+			FROM leaderboard_entries AS e
+			JOIN activities AS a ON a.id=e.activity_id
+			LEFT JOIN users AS u ON u.id=e.user_id
+			WHERE NOT EXISTS (
+				SELECT 1 FROM leaderboard_snapshots AS s WHERE s.activity_id=e.activity_id
+			)
+		) AS ranked
+		ORDER BY ranked.activity_id DESC,ranked.rank_no ASC`).Scan(&list).Error
 	if err != nil {
 		writeError(c, err)
 		return

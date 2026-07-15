@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flower-lottery-backend/middleware"
 	"flower-lottery-backend/model"
+	"flower-lottery-backend/repository"
 	"flower-lottery-backend/response"
 	"flower-lottery-backend/service"
 	"flower-lottery-backend/utils"
@@ -894,6 +895,10 @@ func adminCoinValueForPetalCost(petalCost uint64) (uint64, bool) {
 	return petalCost * adminCoinValuePerPetal, true
 }
 
+func shouldResetLeaderboardSnapshots(activityStatus uint8) bool {
+	return activityStatus == 2
+}
+
 func (a *AdminController) UpdateActivity(c *gin.Context) {
 	startedAt := time.Now()
 	id, ok := adminPathID(c)
@@ -932,17 +937,29 @@ func (a *AdminController) UpdateActivity(c *gin.Context) {
 			return
 		}
 	}
-	var activity model.Activity
-	if err := a.db.Where("id=? AND deleted_at IS NULL", id).First(&activity).Error; err != nil {
+	var snapshotRowsRemoved int64
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		var activity model.Activity
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id=? AND deleted_at IS NULL", id).
+			First(&activity).Error; err != nil {
+			return err
+		}
+		if shouldResetLeaderboardSnapshots(input.Status) {
+			removed, err := repository.NewGameRepository(tx).ResetLeaderboardSnapshots(id)
+			if err != nil {
+				return err
+			}
+			snapshotRowsRemoved = removed
+		}
+		return tx.Model(&activity).Updates(map[string]any{
+			"name": input.Name, "status": input.Status, "starts_at": input.StartsAt,
+			"ends_at": input.EndsAt, "leaderboard_freezes_at": input.LeaderboardFreezesAt,
+			"timezone": input.Timezone,
+		}).Error
+	})
+	if err != nil {
 		adminRecordError(c, err, "活动不存在")
-		return
-	}
-	if err := a.db.Model(&activity).Updates(map[string]any{
-		"name": input.Name, "status": input.Status, "starts_at": input.StartsAt,
-		"ends_at": input.EndsAt, "leaderboard_freezes_at": input.LeaderboardFreezesAt,
-		"timezone": input.Timezone,
-	}).Error; err != nil {
-		writeError(c, err)
 		return
 	}
 	var row adminActivityRow
@@ -955,6 +972,7 @@ func (a *AdminController) UpdateActivity(c *gin.Context) {
 	a.recordAdminOperation(c, startedAt, "activity.update", "activity", strconv.FormatUint(id, 10), gin.H{
 		"name": input.Name, "status": input.Status,
 		"starts_at": input.StartsAt, "ends_at": input.EndsAt,
+		"leaderboard_snapshot_rows_removed": snapshotRowsRemoved,
 	})
 	response.Success(c, row)
 }

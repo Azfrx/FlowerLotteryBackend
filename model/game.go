@@ -271,3 +271,18 @@ type LeaderboardEntry struct {
 }
 
 func (LeaderboardEntry) TableName() string { return "leaderboard_entries" }
+
+type LeaderboardSnapshot struct {
+	ID           uint64 `gorm:"primaryKey"`
+	ActivityID   uint64
+	UserID       uint64
+	RankNo       uint
+	Score        uint64
+	ReachedAt    time.Time
+	RewardStatus uint8
+	FrozenAt     time.Time
+	CreatedAt    time.Time
+	User         User `gorm:"foreignKey:UserID"`
+}
+
+func (LeaderboardSnapshot) TableName() string { return "leaderboard_snapshots" }

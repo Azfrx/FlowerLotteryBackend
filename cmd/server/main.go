@@ -2,10 +2,13 @@ package main
 
 import (
 	"flower-lottery-backend/initialize"
+	"flower-lottery-backend/repository"
 	"flower-lottery-backend/router"
+	"flower-lottery-backend/service"
 	"fmt"
 	"go.uber.org/zap"
 	"os"
+	"time"
 )
 
 func main() {
@@ -24,6 +27,12 @@ func main() {
 	if err != nil {
 		log.Fatal("database init failed", zap.Error(err))
 	}
+	stopLeaderboardFreezer := service.StartLeaderboardFreezer(
+		repository.NewGameRepository(db),
+		log,
+		time.Minute,
+	)
+	defer stopLeaderboardFreezer()
 	engine := router.New(db, log, cfg)
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	if err := engine.Run(addr); err != nil {

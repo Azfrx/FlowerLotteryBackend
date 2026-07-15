@@ -1,10 +1,34 @@
 package service
 
 import (
+	"flower-lottery-backend/common"
 	"flower-lottery-backend/model"
+	"flower-lottery-backend/repository"
 	"reflect"
 	"testing"
 )
+
+func TestLeaderboardWriteError(t *testing.T) {
+	err := leaderboardWriteError(repository.ErrLeaderboardFrozen)
+	appErr, ok := common.AsApp(err)
+	if !ok {
+		t.Fatalf("leaderboardWriteError() returned %T, want AppError", err)
+	}
+	if appErr.Code != 13017 || appErr.Message != "活动已结束，排行榜已冻结" {
+		t.Fatalf("leaderboardWriteError() = %+v", appErr)
+	}
+}
+
+func TestActivityErrorsRemainDistinctFromAuthentication(t *testing.T) {
+	readOnly, ok := common.AsApp(common.ErrActivityReadOnly)
+	if !ok || readOnly.HTTPStatus != 409 || readOnly.Code != 13018 {
+		t.Fatalf("ErrActivityReadOnly = %+v", readOnly)
+	}
+	unavailable, ok := common.AsApp(common.ErrActivityUnavailable)
+	if !ok || unavailable.HTTPStatus != 404 || unavailable.Code != 13019 {
+		t.Fatalf("ErrActivityUnavailable = %+v", unavailable)
+	}
+}
 
 func TestChestUnlockThresholds(t *testing.T) {
 	tests := []struct {
@@ -73,5 +97,26 @@ func TestSelectedChestCandidateIgnoresLegacyReward(t *testing.T) {
 	selected := selectedChestCandidate(candidates)
 	if selected == nil || selected.ID != 2 {
 		t.Fatalf("selectedChestCandidate() = %+v, want current reward candidate 2", selected)
+	}
+}
+
+func TestStageChoiceResultPreservesPendingSelection(t *testing.T) {
+	reward := model.UserReward{
+		ID:       41,
+		Quantity: 1,
+		RewardItem: model.RewardItem{
+			ItemCode:     trueLoveChoiceRewardCode,
+			Name:         "真爱无敌戒指",
+			ImageURL:     "classic.png",
+			AnimationURL: "classic.svga",
+		},
+	}
+
+	result := stageChoiceResult(reward, true)
+	if result.RewardID != reward.ID || result.ItemCode != trueLoveChoiceRewardCode {
+		t.Fatalf("stageChoiceResult() = %+v", result)
+	}
+	if !result.RequiresChoice {
+		t.Fatal("stageChoiceResult() should keep the stage reward pending")
 	}
 }

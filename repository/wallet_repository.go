@@ -88,6 +88,9 @@ func currentActivityID(db *gorm.DB) (uint64, error) {
 		now,
 		now,
 	).First(&activity).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return 0, ErrActivityNotPlayable
+		}
 		return 0, err
 	}
 	return activity.ID, nil

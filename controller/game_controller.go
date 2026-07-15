@@ -163,6 +163,21 @@ func (x *GameController) SelectLotteryReward(c *gin.Context) {
 	}
 	response.Success(c, v)
 }
+func (x *GameController) SelectStageReward(c *gin.Context) {
+	var q request.SelectLotteryReward
+	if c.ShouldBindJSON(&q) != nil {
+		response.Error(c, 400, 10001, "参数错误")
+		return
+	}
+	var id uint64
+	fmt.Sscan(c.Param("id"), &id)
+	v, e := x.s.SelectStageReward(middleware.CurrentUserID(c), id, q.ItemCode, q.RequestID)
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	response.Success(c, v)
+}
 func (x *GameController) ClaimStage(c *gin.Context) {
 	var q request.Action
 	if c.ShouldBindJSON(&q) != nil {

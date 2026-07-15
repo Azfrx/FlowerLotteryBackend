@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"errors"
 	"flower-lottery-backend/model"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -8,6 +9,8 @@ import (
 )
 
 type GameRepository struct{ DB *gorm.DB }
+
+var ErrActivityNotPlayable = errors.New("activity is not playable")
 
 type LotteryHistoryRow struct {
 	ID         uint64
@@ -47,10 +50,45 @@ func NewGameRepository(db *gorm.DB) *GameRepository { return &GameRepository{DB:
 func (r *GameRepository) Tx(fn func(*GameRepository) error) error {
 	return r.DB.Transaction(func(tx *gorm.DB) error { return fn(&GameRepository{DB: tx}) })
 }
+func ActivityPlayableAt(activity *model.Activity, now time.Time) bool {
+	return activity.Status == 2 &&
+		!now.Before(activity.StartsAt) &&
+		now.Before(activity.EndsAt)
+}
 func (r *GameRepository) CurrentActivity() (*model.Activity, error) {
 	var v model.Activity
-	err := r.DB.Where("status = 2 AND starts_at <= ? AND ends_at > ? AND deleted_at IS NULL", time.Now(), time.Now()).First(&v).Error
+	now := time.Now()
+	err := r.DB.Where("status = 2 AND starts_at <= ? AND ends_at > ? AND deleted_at IS NULL", now, now).First(&v).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		err = ErrActivityNotPlayable
+	}
 	return &v, err
+}
+func (r *GameRepository) DisplayActivity(now time.Time) (*model.Activity, error) {
+	var activity model.Activity
+	err := r.DB.
+		Where("deleted_at IS NULL").
+		Where("(status=2 AND starts_at<=?) OR status IN (3,4)", now).
+		Order(clause.Expr{
+			SQL:                "CASE WHEN status=2 AND starts_at<=? AND ends_at>? THEN 0 ELSE 1 END",
+			Vars:               []any{now, now},
+			WithoutParentheses: true,
+		}).
+		Order("ends_at DESC,id DESC").
+		First(&activity).Error
+	return &activity, err
+}
+func (r *GameRepository) EnsureActivityPlayable(activityID uint64) error {
+	var activity model.Activity
+	now := time.Now()
+	err := r.DB.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id").
+		Where("id=? AND status=2 AND starts_at<=? AND ends_at>? AND deleted_at IS NULL", activityID, now, now).
+		First(&activity).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrActivityNotPlayable
+	}
+	return err
 }
 func (r *GameRepository) Pools(activityID uint64) ([]model.PrizePool, error) {
 	var v []model.PrizePool
@@ -154,11 +192,6 @@ func (r *GameRepository) ExistingPreviewOrder(userID uint64, requestID string) (
 }
 func (r *GameRepository) Save(v any) error   { return r.DB.Save(v).Error }
 func (r *GameRepository) Create(v any) error { return r.DB.Create(v).Error }
-func (r *GameRepository) AddLeaderboard(activityID, userID, score uint64) error {
-	now := time.Now()
-	entry := model.LeaderboardEntry{ActivityID: activityID, UserID: userID, Score: score, ReachedAt: now}
-	return r.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "activity_id"}, {Name: "user_id"}}, DoUpdates: clause.Assignments(map[string]any{"score": gorm.Expr("score + ?", score), "reached_at": now, "updated_at": now})}).Create(&entry).Error
-}
 func (r *GameRepository) Round(userID, activityID uint64) (*model.UserActivityRound, error) {
 	var v model.UserActivityRound
 	err := r.DB.Where("user_id=? AND activity_id=? AND status IN (1,2)", userID, activityID).Order("round_no DESC").First(&v).Error
@@ -251,24 +284,6 @@ func (r *GameRepository) LotteryRewardInventory(userID, activityID uint64) ([]Lo
 		Scan(&v).Error
 	return v, err
 }
-func (r *GameRepository) Leaderboard(activityID, userID uint64) ([]model.LeaderboardEntry, *model.LeaderboardEntry, int64, error) {
-	var top []model.LeaderboardEntry
-	err := r.DB.Preload("User").Where("activity_id=?", activityID).Order("score DESC,reached_at ASC,user_id ASC").Limit(20).Find(&top).Error
-	if err != nil {
-		return nil, nil, 0, err
-	}
-	var self model.LeaderboardEntry
-	if err = r.DB.Preload("User").Where("activity_id=? AND user_id=?", activityID, userID).First(&self).Error; err != nil && err != gorm.ErrRecordNotFound {
-		return nil, nil, 0, err
-	}
-	var rank int64
-	if self.ID > 0 {
-		r.DB.Model(&model.LeaderboardEntry{}).Where("activity_id=? AND (score>? OR (score=? AND reached_at<?))", activityID, self.Score, self.Score, self.ReachedAt).Count(&rank)
-		rank++
-	}
-	return top, &self, rank, nil
-}
-
 func (r *GameRepository) ChestForUpdate(id, userID uint64) (*model.UserChestOpportunity, error) {
 	var v model.UserChestOpportunity
 	err := r.DB.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND user_id=?", id, userID).First(&v).Error
@@ -366,6 +381,15 @@ func (r *GameRepository) PendingStageClaims(roundID, activityID uint64, lit uint
 	err := r.DB.Table("stage_reward_rules s").Where("s.activity_id=? AND s.required_flowers<=? AND s.status=1 AND NOT EXISTS (SELECT 1 FROM user_stage_reward_claims c WHERE c.round_id=? AND c.stage_reward_rule_id=s.id AND c.status=1)", activityID, lit, roundID).Count(&eligible).Error
 	return eligible, err
 }
+func (r *GameRepository) PendingCompletedRoundStageClaimsForUser(userID, activityID uint64) (int64, error) {
+	var pending int64
+	err := r.DB.Table("user_activity_rounds AS round").
+		Joins("JOIN stage_reward_rules AS rule ON rule.activity_id=round.activity_id AND rule.status=1 AND rule.required_flowers<=round.lit_flower_count").
+		Where("round.user_id=? AND round.activity_id=? AND round.lit_flower_count>=18", userID, activityID).
+		Where("NOT EXISTS (SELECT 1 FROM user_stage_reward_claims AS claim WHERE claim.round_id=round.id AND claim.stage_reward_rule_id=rule.id AND claim.status=1)").
+		Count(&pending).Error
+	return pending, err
+}
 func (r *GameRepository) PendingChests(roundID uint64) (int64, error) {
 	var n int64
 	err := r.DB.Model(&model.UserChestOpportunity{}).Where("round_id=? AND status IN (0,1)", roundID).Count(&n).Error
@@ -413,6 +437,29 @@ func (r *GameRepository) PendingLotteryChoiceCount(userID, activityID uint64) (i
 		Count(&n).Error
 	return n, err
 }
+func (r *GameRepository) PendingStageChoiceRewards(userID, activityID uint64) ([]model.UserReward, error) {
+	var v []model.UserReward
+	err := r.DB.Preload("RewardItem").
+		Where("user_id=? AND activity_id=? AND source_type='stage' AND status=0", userID, activityID).
+		Order("id ASC").
+		Find(&v).Error
+	return v, err
+}
+func (r *GameRepository) PendingStageChoiceCount(userID, activityID uint64) (int64, error) {
+	var n int64
+	err := r.DB.Model(&model.UserReward{}).
+		Where("user_id=? AND activity_id=? AND source_type='stage' AND status=0", userID, activityID).
+		Count(&n).Error
+	return n, err
+}
+func (r *GameRepository) PendingStageChoicesForRound(roundID uint64) (int64, error) {
+	var n int64
+	err := r.DB.Table("user_rewards AS reward").
+		Joins("JOIN user_stage_reward_claims AS claim ON claim.id=reward.source_id").
+		Where("reward.source_type='stage' AND reward.status=0 AND claim.round_id=?", roundID).
+		Count(&n).Error
+	return n, err
+}
 func (r *GameRepository) PendingLotteryChoiceDrawIDs(userID uint64, drawIDs []uint64) ([]uint64, error) {
 	if len(drawIDs) == 0 {
 		return []uint64{}, nil
@@ -430,6 +477,21 @@ func (r *GameRepository) LotteryChoiceRewardForUpdate(userID, drawID uint64) (*m
 		Preload("RewardItem").
 		Where("user_id=? AND source_type IN ? AND source_id=? AND status IN (0,1,2)", userID, []string{"lottery", "preview"}, drawID).
 		Order("id DESC").
+		First(&v).Error
+	return &v, err
+}
+func (r *GameRepository) StageChoiceRewardForUpdate(userID, rewardID uint64) (*model.UserReward, error) {
+	var v model.UserReward
+	err := r.DB.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Preload("RewardItem").
+		Where("id=? AND user_id=? AND source_type='stage' AND status IN (0,1,2)", rewardID, userID).
+		First(&v).Error
+	return &v, err
+}
+func (r *GameRepository) StageClaimByIDForUpdate(id, userID uint64) (*model.UserStageRewardClaim, error) {
+	var v model.UserStageRewardClaim
+	err := r.DB.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Where("id=? AND user_id=?", id, userID).
 		First(&v).Error
 	return &v, err
 }

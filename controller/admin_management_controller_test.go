@@ -131,6 +131,17 @@ func TestAdminCoinValueForPetalCost(t *testing.T) {
 	}
 }
 
+func TestRunningActivityResetsLeaderboardSnapshots(t *testing.T) {
+	if !shouldResetLeaderboardSnapshots(2) {
+		t.Fatal("saving an activity as running should reset its frozen leaderboard snapshot")
+	}
+	for _, status := range []uint8{0, 1, 3, 4} {
+		if shouldResetLeaderboardSnapshots(status) {
+			t.Fatalf("activity status %d should preserve leaderboard snapshots", status)
+		}
+	}
+}
+
 func TestValidateAdminActivityContent(t *testing.T) {
 	content := model.ActivityContent{
 		Instructions: model.ActivityInstructionsContent{

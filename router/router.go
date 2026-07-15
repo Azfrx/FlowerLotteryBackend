@@ -64,6 +64,7 @@ func New(db *gorm.DB, log *zap.Logger, cfg *config.Config) *gin.Engine {
 	protected.POST("/flower/chests/:id/select", game.SelectChest)
 	protected.GET("/flower/chests/records", game.ChestHistory)
 	protected.POST("/flower/stage-rewards/:id/claim", game.ClaimStage)
+	protected.POST("/flower/stage-reward-choices/:id/select", game.SelectStageReward)
 	protected.POST("/flower/round/next", game.NextRound)
 	protected.GET("/rewards", game.Rewards)
 	protected.GET("/leaderboard", game.Leaderboard)

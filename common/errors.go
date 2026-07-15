@@ -30,6 +30,8 @@ var ErrCoinInsufficient = NewError(409, 12001, "金币余额不足")
 var ErrExchangeOption = NewError(400, 12002, "兑换档位无效")
 var ErrPetalGiftPackPurchased = NewError(409, 12003, "花瓣特惠礼包每人限购一次")
 var ErrExchangeOptionChanged = NewError(409, 12004, "兑换档位已更新，请重新打开购买花瓣页面")
+var ErrActivityReadOnly = NewError(409, 13018, "活动已结束，当前仅支持查看")
+var ErrActivityUnavailable = NewError(404, 13019, "暂无可查看的活动")
 var ErrDuplicateRequest = NewError(409, 10003, "请勿重复提交")
 
 func AsApp(err error) (*AppError, bool) {

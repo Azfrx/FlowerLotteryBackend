@@ -99,7 +99,7 @@ func (a *AdminController) Dashboard(c *gin.Context) {
 		Petals int64 `gorm:"column:petals"`
 	}
 	if err := a.db.Table("lottery_orders").
-		Select("COUNT(*) AS orders,COALESCE(SUM(executed_draw_count),0) AS draws,COALESCE(SUM(petal_cost-petal_refund),0) AS petals").
+		Select("COUNT(*) AS orders,COALESCE(SUM(executed_draw_count),0) AS draws,COALESCE(SUM(petal_cost),0) AS petals").
 		Where("status=1").Scan(&orderTotals).Error; err != nil {
 		writeError(c, err)
 		return
@@ -157,7 +157,7 @@ func (a *AdminController) Dashboard(c *gin.Context) {
 	if err := a.db.Table("lottery_orders").
 		Select(`DATE_FORMAT(created_at,'%Y-%m-%d') AS day,COUNT(*) AS orders,
 			COALESCE(SUM(executed_draw_count),0) AS draws,
-			COALESCE(SUM(petal_cost-petal_refund),0) AS petals,
+			COALESCE(SUM(petal_cost),0) AS petals,
 			COALESCE(SUM(CASE WHEN flowers_after>=flowers_before THEN flowers_after-flowers_before ELSE 0 END),0) AS flowers`).
 		Where("status=1 AND created_at>=?", since).
 		Group("DATE_FORMAT(created_at,'%Y-%m-%d')").
@@ -201,7 +201,7 @@ func (a *AdminController) Dashboard(c *gin.Context) {
 	}
 
 	if err := a.db.Table("lottery_orders AS o").
-		Select("p.code AS code,p.name AS name,COUNT(*) AS orders,COALESCE(SUM(o.executed_draw_count),0) AS draws,COALESCE(SUM(o.petal_cost-o.petal_refund),0) AS petals").
+		Select("p.code AS code,p.name AS name,COUNT(*) AS orders,COALESCE(SUM(o.executed_draw_count),0) AS draws,COALESCE(SUM(o.petal_cost),0) AS petals").
 		Joins("JOIN prize_pools AS p ON p.id=o.prize_pool_id").
 		Where("o.status=1").
 		Group("p.id,p.code,p.name").
