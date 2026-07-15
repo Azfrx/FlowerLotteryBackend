@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const newUserInitialCoinBalance int64 = 1_000_000
+const newUserInitialCoinBalance int64 = 10_000_000
 
 type AuthService struct {
 	users  repository.UserRepository

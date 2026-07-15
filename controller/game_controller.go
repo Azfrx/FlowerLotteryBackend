@@ -12,13 +12,22 @@ import (
 type GameController struct {
 	s             *service.GameService
 	announcements *service.RewardAnnouncementHub
+	poolConfigs   *service.PoolConfigHub
 }
 
-func NewGameController(s *service.GameService, announcements *service.RewardAnnouncementHub) *GameController {
-	return &GameController{s: s, announcements: announcements}
+func NewGameController(s *service.GameService, announcements *service.RewardAnnouncementHub, poolConfigs *service.PoolConfigHub) *GameController {
+	return &GameController{s: s, announcements: announcements, poolConfigs: poolConfigs}
 }
 func (x *GameController) Home(c *gin.Context) {
 	v, e := x.s.Home(middleware.CurrentUserID(c))
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	response.Success(c, v)
+}
+func (x *GameController) Pools(c *gin.Context) {
+	v, e := x.s.Pools()
 	if e != nil {
 		writeError(c, e)
 		return
@@ -133,6 +142,21 @@ func (x *GameController) SelectChest(c *gin.Context) {
 	var id uint64
 	fmt.Sscan(c.Param("id"), &id)
 	v, e := x.s.SelectChest(middleware.CurrentUserID(c), id, q.ItemCode, q.RequestID)
+	if e != nil {
+		writeError(c, e)
+		return
+	}
+	response.Success(c, v)
+}
+func (x *GameController) SelectLotteryReward(c *gin.Context) {
+	var q request.SelectLotteryReward
+	if c.ShouldBindJSON(&q) != nil {
+		response.Error(c, 400, 10001, "参数错误")
+		return
+	}
+	var id uint64
+	fmt.Sscan(c.Param("id"), &id)
+	v, e := x.s.SelectLotteryReward(middleware.CurrentUserID(c), id, q.ItemCode, q.RequestID)
 	if e != nil {
 		writeError(c, e)
 		return

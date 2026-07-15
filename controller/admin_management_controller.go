@@ -6,6 +6,7 @@ import (
 	"flower-lottery-backend/middleware"
 	"flower-lottery-backend/model"
 	"flower-lottery-backend/response"
+	"flower-lottery-backend/service"
 	"flower-lottery-backend/utils"
 	"fmt"
 	"github.com/gin-gonic/gin"
@@ -20,6 +21,7 @@ import (
 )
 
 const adminPoolTotalWeight uint64 = 1_000_000
+const adminCoinValuePerPetal uint64 = 60
 const adminActivityContentMaxBytes = 256 * 1024
 const adminExchangeOptionMaxValue uint64 = 9_223_372_036_854_775_807
 
@@ -79,13 +81,11 @@ type adminPoolRewardInput struct {
 }
 
 type adminUpdatePoolInput struct {
-	Name                string                 `json:"name"`
-	PetalCostPerDraw    uint64                 `json:"petal_cost_per_draw"`
-	CoinValuePerDraw    uint64                 `json:"coin_value_per_draw"`
-	SupportedDrawCounts []uint                 `json:"supported_draw_counts"`
-	Status              uint8                  `json:"status"`
-	Remark              string                 `json:"remark"`
-	Rewards             []adminPoolRewardInput `json:"rewards"`
+	Name             string                 `json:"name"`
+	PetalCostPerDraw uint64                 `json:"petal_cost_per_draw"`
+	Status           uint8                  `json:"status"`
+	Remark           string                 `json:"remark"`
+	Rewards          []adminPoolRewardInput `json:"rewards"`
 }
 
 type adminPoolRewardRow struct {
@@ -499,21 +499,36 @@ func (a *AdminController) UpdateRewardItem(c *gin.Context) {
 		return
 	}
 	var item model.RewardItem
-	if err := a.db.Where("id=? AND deleted_at IS NULL", id).First(&item).Error; err != nil {
+	err := a.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id=? AND deleted_at IS NULL", id).First(&item).Error; err != nil {
+			return err
+		}
+		if rewardItemGoingOffline(item.Status, input.Status) {
+			referenceCount, err := onlinePrizePoolRewardReferenceCount(tx, id)
+			if err != nil {
+				return err
+			}
+			if referenceCount > 0 {
+				return errRewardItemReferencedByOnlinePool
+			}
+		}
+		updates := map[string]any{
+			"name": input.Name, "item_type": input.ItemType,
+			"image_url": input.ImageURL, "animation_url": input.AnimationURL,
+			"rarity": input.Rarity, "status": input.Status,
+		}
+		if err := tx.Model(&item).Updates(updates).Error; err != nil {
+			return err
+		}
+		return tx.Where("id=?", id).First(&item).Error
+	})
+	if errors.Is(err, errRewardItemReferencedByOnlinePool) {
+		response.Error(c, 409, 13004, "奖品仍被线上奖池引用，请先从奖池中移除并发布新版本")
+		return
+	}
+	if err != nil {
 		adminRecordError(c, err, "奖品不存在")
-		return
-	}
-	updates := map[string]any{
-		"name": input.Name, "item_type": input.ItemType,
-		"image_url": input.ImageURL, "animation_url": input.AnimationURL,
-		"rarity": input.Rarity, "status": input.Status,
-	}
-	if err := a.db.Model(&item).Updates(updates).Error; err != nil {
-		writeError(c, err)
-		return
-	}
-	if err := a.db.Where("id=?", id).First(&item).Error; err != nil {
-		writeError(c, err)
 		return
 	}
 	a.recordAdminOperation(c, startedAt, "reward.update", "reward_item", strconv.FormatUint(id, 10), gin.H{
@@ -742,25 +757,14 @@ func (a *AdminController) UpdatePoolConfig(c *gin.Context) {
 		adminRequestError(c, "奖池名称不能为空且不能超过64个字符")
 		return
 	}
-	if input.PetalCostPerDraw == 0 || input.CoinValuePerDraw == 0 {
-		adminRequestError(c, "单抽消耗和金币价值必须大于零")
+	coinValuePerDraw, validPetalCost := adminCoinValueForPetalCost(input.PetalCostPerDraw)
+	if !validPetalCost {
+		adminRequestError(c, "单抽消耗花瓣必须大于零且数值有效")
 		return
 	}
-	if input.Status > 1 || len(input.SupportedDrawCounts) == 0 || len(input.Rewards) == 0 {
-		adminRequestError(c, "奖池状态、支持抽数或奖励列表无效")
+	if input.Status > 1 || len(input.Rewards) == 0 {
+		adminRequestError(c, "奖池状态或奖励列表无效")
 		return
-	}
-	seenDrawCounts := make(map[uint]struct{}, len(input.SupportedDrawCounts))
-	for _, count := range input.SupportedDrawCounts {
-		if count == 0 || count > 1000 {
-			adminRequestError(c, "支持抽数需在1至1000之间")
-			return
-		}
-		if _, exists := seenDrawCounts[count]; exists {
-			adminRequestError(c, "支持抽数不能重复")
-			return
-		}
-		seenDrawCounts[count] = struct{}{}
 	}
 	var totalWeight uint64
 	itemIDs := make([]uint64, 0, len(input.Rewards))
@@ -786,34 +790,27 @@ func (a *AdminController) UpdatePoolConfig(c *gin.Context) {
 		adminRequestError(c, fmt.Sprintf("奖池概率总和必须为100%%，当前为%.4f%%", float64(totalWeight)/10_000))
 		return
 	}
-	var items []model.RewardItem
-	if err := a.db.Where("id IN ? AND status=1 AND deleted_at IS NULL", itemIDs).Find(&items).Error; err != nil {
-		writeError(c, err)
-		return
-	}
-	if len(items) != len(uniqueItemIDs) {
-		adminRequestError(c, "奖励列表包含不存在或已停用的奖品")
-		return
-	}
-	itemByID := make(map[uint64]model.RewardItem, len(items))
-	for _, item := range items {
-		itemByID[item.ID] = item
-	}
-	supportedDrawCounts, err := json.Marshal(input.SupportedDrawCounts)
-	if err != nil {
-		writeError(c, err)
-		return
-	}
 	adminID := middleware.CurrentAdminID(c)
-	err = a.db.Transaction(func(tx *gorm.DB) error {
+	err := a.db.Transaction(func(tx *gorm.DB) error {
 		var pool model.PrizePool
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id=? AND deleted_at IS NULL", id).First(&pool).Error; err != nil {
 			return err
 		}
+		var items []model.RewardItem
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id IN ? AND status=1 AND deleted_at IS NULL", itemIDs).Find(&items).Error; err != nil {
+			return err
+		}
+		if len(items) != len(uniqueItemIDs) {
+			return errAdminPoolRewardItemUnavailable
+		}
+		itemByID := make(map[uint64]model.RewardItem, len(items))
+		for _, item := range items {
+			itemByID[item.ID] = item
+		}
 		if err := tx.Model(&pool).Updates(map[string]any{
 			"name": input.Name, "petal_cost_per_draw": input.PetalCostPerDraw,
-			"coin_value_per_draw":   input.CoinValuePerDraw,
-			"supported_draw_counts": supportedDrawCounts, "status": input.Status,
+			"coin_value_per_draw": coinValuePerDraw, "status": input.Status,
 		}).Error; err != nil {
 			return err
 		}
@@ -857,6 +854,10 @@ func (a *AdminController) UpdatePoolConfig(c *gin.Context) {
 		}
 		return tx.Model(&version).Updates(map[string]any{"status": 1, "effective_at": now}).Error
 	})
+	if errors.Is(err, errAdminPoolRewardItemUnavailable) {
+		adminRequestError(c, "奖励列表包含不存在或已停用的奖品")
+		return
+	}
 	if err != nil {
 		adminRecordError(c, err, "奖池不存在")
 		return
@@ -867,9 +868,30 @@ func (a *AdminController) UpdatePoolConfig(c *gin.Context) {
 		return
 	}
 	a.recordAdminOperation(c, startedAt, "pool.publish", "prize_pool", strconv.FormatUint(id, 10), gin.H{
-		"name": input.Name, "version_no": config.VersionNo, "reward_count": len(input.Rewards), "status": input.Status,
+		"name": input.Name, "version_no": config.VersionNo, "reward_count": len(input.Rewards),
+		"status": input.Status, "petal_cost_per_draw": input.PetalCostPerDraw,
+		"coin_value_per_draw": coinValuePerDraw,
 	})
+	if a.poolConfigs != nil {
+		publishedAt := time.Now()
+		if config.EffectiveAt != nil {
+			publishedAt = *config.EffectiveAt
+		}
+		a.poolConfigs.Publish(service.PoolConfigUpdate{
+			PoolID: id, PoolCode: config.Code,
+			PetalCostPerDraw: config.PetalCostPerDraw,
+			CoinValuePerDraw: config.CoinValuePerDraw,
+			VersionNo:        config.VersionNo, PublishedAt: publishedAt,
+		})
+	}
 	response.Success(c, config)
+}
+
+func adminCoinValueForPetalCost(petalCost uint64) (uint64, bool) {
+	if petalCost == 0 || petalCost > ^uint64(0)/adminCoinValuePerPetal {
+		return 0, false
+	}
+	return petalCost * adminCoinValuePerPetal, true
 }
 
 func (a *AdminController) UpdateActivity(c *gin.Context) {
@@ -1272,6 +1294,23 @@ func adminPathID(c *gin.Context) (uint64, bool) {
 	return id, true
 }
 
+func rewardItemGoingOffline(currentStatus, nextStatus uint8) bool {
+	return currentStatus == 1 && nextStatus == 0
+}
+
+func onlinePrizePoolRewardReferences(db *gorm.DB, rewardItemID uint64) *gorm.DB {
+	return db.Table("prize_pool_rewards AS pr").
+		Joins("JOIN prize_pool_versions AS v ON v.id=pr.version_id AND v.status=1").
+		Joins("JOIN prize_pools AS p ON p.id=v.prize_pool_id AND p.status=1 AND p.deleted_at IS NULL").
+		Where("pr.reward_item_id=?", rewardItemID)
+}
+
+func onlinePrizePoolRewardReferenceCount(db *gorm.DB, rewardItemID uint64) (int64, error) {
+	var count int64
+	err := onlinePrizePoolRewardReferences(db, rewardItemID).Count(&count).Error
+	return count, err
+}
+
 func adminRequestError(c *gin.Context, message string) {
 	response.Error(c, 400, 10001, message)
 }
@@ -1337,4 +1376,8 @@ func truncateAdminString(value string, limit int) string {
 	return value[:limit]
 }
 
-var errAdminInsufficientBalance = errors.New("admin adjustment would make balance negative")
+var (
+	errAdminInsufficientBalance         = errors.New("admin adjustment would make balance negative")
+	errRewardItemReferencedByOnlinePool = errors.New("reward item is referenced by an online prize pool")
+	errAdminPoolRewardItemUnavailable   = errors.New("pool reward item is unavailable")
+)

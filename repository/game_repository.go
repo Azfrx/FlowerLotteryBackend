@@ -38,6 +38,11 @@ type LotteryRewardInventoryRow struct {
 	LastWonAt    time.Time
 }
 
+type RewardPoolCodeRow struct {
+	DrawID   uint64
+	PoolCode string
+}
+
 func NewGameRepository(db *gorm.DB) *GameRepository { return &GameRepository{DB: db} }
 func (r *GameRepository) Tx(fn func(*GameRepository) error) error {
 	return r.DB.Transaction(func(tx *gorm.DB) error { return fn(&GameRepository{DB: tx}) })
@@ -183,6 +188,19 @@ func (r *GameRepository) Rewards(userID uint64, page, pageSize int) ([]model.Use
 	}
 	err := q.Preload("RewardItem").Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&v).Error
 	return v, n, err
+}
+func (r *GameRepository) RewardPoolCodes(drawIDs []uint64) ([]RewardPoolCodeRow, error) {
+	if len(drawIDs) == 0 {
+		return []RewardPoolCodeRow{}, nil
+	}
+	var v []RewardPoolCodeRow
+	err := r.DB.Table("lottery_draws AS draw").
+		Select("draw.id AS draw_id, pool.code AS pool_code").
+		Joins("JOIN lottery_orders AS lottery_order ON lottery_order.id=draw.lottery_order_id").
+		Joins("JOIN prize_pools AS pool ON pool.id=lottery_order.prize_pool_id").
+		Where("draw.id IN ?", drawIDs).
+		Scan(&v).Error
+	return v, err
 }
 func (r *GameRepository) LotteryHistory(userID, activityID uint64, poolCode string, limit int) ([]LotteryHistoryRow, error) {
 	var v []LotteryHistoryRow
@@ -368,6 +386,52 @@ func (r *GameRepository) Draws(orderID uint64) ([]model.LotteryDraw, error) {
 	var v []model.LotteryDraw
 	err := r.DB.Preload("RewardItem").Where("lottery_order_id=?", orderID).Order("draw_index").Find(&v).Error
 	return v, err
+}
+func (r *GameRepository) DrawForUserForUpdate(id, userID uint64) (*model.LotteryDraw, error) {
+	var v model.LotteryDraw
+	orderIDs := r.DB.Model(&model.LotteryOrder{}).
+		Select("id").
+		Where("user_id=? AND status=1", userID)
+	err := r.DB.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Preload("RewardItem").
+		Where("id=? AND lottery_order_id IN (?)", id, orderIDs).
+		First(&v).Error
+	return &v, err
+}
+func (r *GameRepository) PendingLotteryChoiceRewards(userID, activityID uint64) ([]model.UserReward, error) {
+	var v []model.UserReward
+	err := r.DB.Preload("RewardItem").
+		Where("user_id=? AND activity_id=? AND source_type IN ? AND status=0", userID, activityID, []string{"lottery", "preview"}).
+		Order("id ASC").
+		Find(&v).Error
+	return v, err
+}
+func (r *GameRepository) PendingLotteryChoiceCount(userID, activityID uint64) (int64, error) {
+	var n int64
+	err := r.DB.Model(&model.UserReward{}).
+		Where("user_id=? AND activity_id=? AND source_type IN ? AND status=0", userID, activityID, []string{"lottery", "preview"}).
+		Count(&n).Error
+	return n, err
+}
+func (r *GameRepository) PendingLotteryChoiceDrawIDs(userID uint64, drawIDs []uint64) ([]uint64, error) {
+	if len(drawIDs) == 0 {
+		return []uint64{}, nil
+	}
+	var ids []uint64
+	err := r.DB.Model(&model.UserReward{}).
+		Where("user_id=? AND source_type IN ? AND status=0 AND source_id IN ?", userID, []string{"lottery", "preview"}, drawIDs).
+		Order("source_id ASC").
+		Pluck("source_id", &ids).Error
+	return ids, err
+}
+func (r *GameRepository) LotteryChoiceRewardForUpdate(userID, drawID uint64) (*model.UserReward, error) {
+	var v model.UserReward
+	err := r.DB.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Preload("RewardItem").
+		Where("user_id=? AND source_type IN ? AND source_id=? AND status IN (0,1,2)", userID, []string{"lottery", "preview"}, drawID).
+		Order("id DESC").
+		First(&v).Error
+	return &v, err
 }
 func (r *GameRepository) NormalOrderCount(userID, activityID uint64) (int64, error) {
 	var n int64

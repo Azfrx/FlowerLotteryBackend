@@ -35,18 +35,21 @@ type HomeData struct {
 	OwnedRewardItemCodes      []string                 `json:"owned_reward_item_codes"`
 	ClaimedStageRewardRuleIDs []uint64                 `json:"claimed_stage_reward_rule_ids"`
 	PendingChests             []ChestOpportunityResult `json:"pending_chests"`
+	PendingLotteryChoices     []LotteryRewardResult    `json:"pending_lottery_choices"`
 	PendingPreview            *LotteryResult           `json:"pending_preview"`
 	LatestLeaderboardRewardID uint64                   `json:"latest_leaderboard_reward_id"`
 	ShowPreview               bool                     `json:"show_late_to_pay"`
 }
 
 type LotteryRewardResult struct {
-	DrawIndex    uint
-	ItemCode     string
-	Name         string
-	Quantity     uint64
-	ImageURL     string
-	AnimationURL string
+	DrawID         uint64
+	DrawIndex      uint
+	ItemCode       string
+	Name           string
+	Quantity       uint64
+	ImageURL       string
+	AnimationURL   string
+	RequiresChoice bool
 }
 
 type LotteryResult struct {
@@ -97,10 +100,23 @@ type LotteryRewardInventoryResult struct {
 	AnimationURL string
 }
 
+type UserRewardResult struct {
+	model.UserReward
+	SourcePoolCode string
+}
+
 type LotteryHistoryResult struct {
 	Day    []HistoryRecordResult `json:"day"`
 	Night  []HistoryRecordResult `json:"night"`
 	Flower []HistoryRecordResult `json:"flower"`
+}
+
+func (s *GameService) Pools() ([]model.PrizePool, error) {
+	activity, err := s.repo.CurrentActivity()
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.Pools(activity.ID)
 }
 
 func (s *GameService) Home(userID uint64) (*HomeData, error) {
@@ -180,6 +196,25 @@ func (s *GameService) Home(userID uint64) (*HomeData, error) {
 	if err != nil {
 		return nil, err
 	}
+	pendingLotteryRewards, err := s.repo.PendingLotteryChoiceRewards(userID, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	pendingLotteryChoices := make([]LotteryRewardResult, 0, len(pendingLotteryRewards))
+	for _, reward := range pendingLotteryRewards {
+		if reward.SourceID == nil {
+			continue
+		}
+		pendingLotteryChoices = append(pendingLotteryChoices, LotteryRewardResult{
+			DrawID:         *reward.SourceID,
+			ItemCode:       reward.RewardItem.ItemCode,
+			Name:           reward.RewardItem.Name,
+			Quantity:       reward.Quantity,
+			ImageURL:       reward.RewardItem.ImageURL,
+			AnimationURL:   reward.RewardItem.AnimationURL,
+			RequiresChoice: true,
+		})
+	}
 	normalOrderCount, err := s.repo.NormalOrderCount(userID, a.ID)
 	if err != nil {
 		return nil, err
@@ -210,6 +245,7 @@ func (s *GameService) Home(userID uint64) (*HomeData, error) {
 		OwnedRewardItemCodes:      ownedCodes,
 		ClaimedStageRewardRuleIDs: claimedStageIDs,
 		PendingChests:             pendingChestResults,
+		PendingLotteryChoices:     pendingLotteryChoices,
 		PendingPreview:            pendingPreview,
 		LatestLeaderboardRewardID: latestLeaderboardRewardID,
 		ShowPreview:               normalOrderCount == 0 && previewOrderCount == 0,
@@ -431,6 +467,13 @@ func (s *GameService) Draw(userID uint64, poolCode string, count uint, requestID
 		} else if pendingPreviewErr != gorm.ErrRecordNotFound {
 			return pendingPreviewErr
 		}
+		pendingChoiceCount, e := r.PendingLotteryChoiceCount(userID, a.ID)
+		if e != nil {
+			return e
+		}
+		if pendingChoiceCount > 0 {
+			return common.NewError(409, 13014, "请先选择真爱无敌戒指款式")
+		}
 		round, e = advanceCompletedRoundForDraw(r, round)
 		if e != nil {
 			return e
@@ -463,7 +506,7 @@ func (s *GameService) Draw(userID uint64, poolCode string, count uint, requestID
 					return e
 				}
 			}
-			if e = grantReward(r, userID, a.ID, chosen.RewardItem, chosen.Quantity, "lottery", draw.ID, wallet); e != nil {
+			if e = grantLotteryReward(r, userID, a.ID, chosen.RewardItem, chosen.Quantity, "lottery", draw.ID, wallet); e != nil {
 				return e
 			}
 			order.ExecutedDrawCount++
@@ -513,15 +556,30 @@ func lotteryResultForOrder(r *repository.GameRepository, order *model.LotteryOrd
 	if err != nil {
 		return nil, err
 	}
+	drawIDs := make([]uint64, 0, len(draws))
+	for _, draw := range draws {
+		drawIDs = append(drawIDs, draw.ID)
+	}
+	pendingChoiceDrawIDs, err := r.PendingLotteryChoiceDrawIDs(order.UserID, drawIDs)
+	if err != nil {
+		return nil, err
+	}
+	pendingChoiceDrawIDSet := make(map[uint64]struct{}, len(pendingChoiceDrawIDs))
+	for _, drawID := range pendingChoiceDrawIDs {
+		pendingChoiceDrawIDSet[drawID] = struct{}{}
+	}
 	rewards := make([]LotteryRewardResult, 0, len(draws))
 	for _, draw := range draws {
+		_, pendingChoice := pendingChoiceDrawIDSet[draw.ID]
 		rewards = append(rewards, LotteryRewardResult{
-			DrawIndex:    draw.DrawIndex,
-			ItemCode:     draw.RewardItem.ItemCode,
-			Name:         draw.RewardItem.Name,
-			Quantity:     draw.RewardQuantity,
-			ImageURL:     draw.RewardItem.ImageURL,
-			AnimationURL: draw.RewardItem.AnimationURL,
+			DrawID:         draw.ID,
+			DrawIndex:      draw.DrawIndex,
+			ItemCode:       draw.RewardItem.ItemCode,
+			Name:           draw.RewardItem.Name,
+			Quantity:       draw.RewardQuantity,
+			ImageURL:       draw.RewardItem.ImageURL,
+			AnimationURL:   draw.RewardItem.AnimationURL,
+			RequiresChoice: draw.RewardItem.ItemCode == trueLoveChoiceRewardCode && (order.Status == 2 || pendingChoice),
 		})
 	}
 
@@ -614,6 +672,23 @@ func grantReward(r *repository.GameRepository, userID, activityID uint64, item m
 	}
 	now := timeNow()
 	reward := model.UserReward{UserID: userID, ActivityID: activityID, RewardItemID: item.ID, Quantity: q, SourceType: source, SourceID: &sourceID, Status: 1, RewardSnapshot: rewardJSON(item, q), GrantedAt: &now}
+	return r.Create(&reward)
+}
+
+func grantLotteryReward(r *repository.GameRepository, userID, activityID uint64, item model.RewardItem, q uint64, source string, sourceID uint64, wallet *model.UserWallet) error {
+	if item.ItemCode != trueLoveChoiceRewardCode {
+		return grantReward(r, userID, activityID, item, q, source, sourceID, wallet)
+	}
+	reward := model.UserReward{
+		UserID:         userID,
+		ActivityID:     activityID,
+		RewardItemID:   item.ID,
+		Quantity:       q,
+		SourceType:     source,
+		SourceID:       &sourceID,
+		Status:         0,
+		RewardSnapshot: rewardJSON(item, q),
+	}
 	return r.Create(&reward)
 }
 
@@ -722,8 +797,34 @@ func (s *GameService) LotteryRewardInventory(userID uint64) ([]LotteryRewardInve
 	}
 	return result, nil
 }
-func (s *GameService) Rewards(userID uint64, page, pageSize int) ([]model.UserReward, int64, error) {
-	return s.repo.Rewards(userID, page, pageSize)
+func (s *GameService) Rewards(userID uint64, page, pageSize int) ([]UserRewardResult, int64, error) {
+	rewards, total, err := s.repo.Rewards(userID, page, pageSize)
+	if err != nil {
+		return nil, 0, err
+	}
+	drawIDs := make([]uint64, 0, len(rewards))
+	for _, reward := range rewards {
+		if reward.SourceID != nil && (reward.SourceType == "lottery" || reward.SourceType == "preview") {
+			drawIDs = append(drawIDs, *reward.SourceID)
+		}
+	}
+	poolRows, err := s.repo.RewardPoolCodes(drawIDs)
+	if err != nil {
+		return nil, 0, err
+	}
+	poolCodes := make(map[uint64]string, len(poolRows))
+	for _, row := range poolRows {
+		poolCodes[row.DrawID] = row.PoolCode
+	}
+	result := make([]UserRewardResult, 0, len(rewards))
+	for _, reward := range rewards {
+		poolCode := ""
+		if reward.SourceID != nil {
+			poolCode = poolCodes[*reward.SourceID]
+		}
+		result = append(result, UserRewardResult{UserReward: reward, SourcePoolCode: poolCode})
+	}
+	return result, total, nil
 }
 func (s *GameService) Leaderboard(userID uint64) ([]model.LeaderboardEntry, *model.LeaderboardEntry, int64, error) {
 	a, e := s.repo.CurrentActivity()
@@ -737,32 +838,69 @@ const trueLoveChoiceRewardCode = "1207751"
 
 var chestRewardItemCodes = []string{"1205251", "1205470", trueLoveChoiceRewardCode}
 
+var chestRewardItemCodeSet = map[string]struct{}{
+	"1205251":                {},
+	"1205470":                {},
+	trueLoveChoiceRewardCode: {},
+}
+
 var trueLoveChoiceItemCodes = map[string]struct{}{
 	"1207751": {},
 	"1207752": {},
 	"1207753": {},
 }
 
+func isCurrentChestRewardItemCode(itemCode string) bool {
+	_, exists := chestRewardItemCodeSet[itemCode]
+	return exists
+}
+
 func selectedChestCandidate(candidates []model.UserChestCandidate) *model.UserChestCandidate {
 	for i := range candidates {
-		if candidates[i].Selected == 1 {
+		if candidates[i].Selected == 1 && isCurrentChestRewardItemCode(candidates[i].RewardItem.ItemCode) {
 			return &candidates[i]
 		}
 	}
 	return nil
 }
 
-func chestRulesWithFallback(r *repository.GameRepository, activityID uint64, chestNo uint8) ([]model.ChestRewardRule, error) {
-	rules, err := r.ChestRules(activityID, chestNo)
-	if err != nil || len(rules) > 0 {
-		return rules, err
-	}
-	items, err := r.RewardItemsByCodes(chestRewardItemCodes)
-	if err != nil {
-		return nil, err
-	}
-	rules = make([]model.ChestRewardRule, 0, len(items))
+func currentChestRewardRules(activityID uint64, chestNo uint8, configuredRules []model.ChestRewardRule, items []model.RewardItem) []model.ChestRewardRule {
+	itemsByCode := make(map[string]model.RewardItem, len(items))
+	itemsByID := make(map[uint64]model.RewardItem, len(items))
 	for _, item := range items {
+		if !isCurrentChestRewardItemCode(item.ItemCode) {
+			continue
+		}
+		itemsByCode[item.ItemCode] = item
+		itemsByID[item.ID] = item
+	}
+
+	configuredByCode := make(map[string]model.ChestRewardRule, len(configuredRules))
+	for _, rule := range configuredRules {
+		item := rule.RewardItem
+		if item.ItemCode == "" {
+			item = itemsByID[rule.RewardItemID]
+		}
+		if !isCurrentChestRewardItemCode(item.ItemCode) {
+			continue
+		}
+		if _, exists := configuredByCode[item.ItemCode]; exists {
+			continue
+		}
+		rule.RewardItem = item
+		configuredByCode[item.ItemCode] = rule
+	}
+
+	rules := make([]model.ChestRewardRule, 0, len(chestRewardItemCodes))
+	for _, itemCode := range chestRewardItemCodes {
+		if rule, exists := configuredByCode[itemCode]; exists {
+			rules = append(rules, rule)
+			continue
+		}
+		item, exists := itemsByCode[itemCode]
+		if !exists {
+			continue
+		}
 		rules = append(rules, model.ChestRewardRule{
 			ActivityID:   activityID,
 			ChestNo:      chestNo,
@@ -772,6 +910,22 @@ func chestRulesWithFallback(r *repository.GameRepository, activityID uint64, che
 			Status:       1,
 			RewardItem:   item,
 		})
+	}
+	return rules
+}
+
+func chestRulesWithFallback(r *repository.GameRepository, activityID uint64, chestNo uint8) ([]model.ChestRewardRule, error) {
+	configuredRules, err := r.ChestRules(activityID, chestNo)
+	if err != nil {
+		return nil, err
+	}
+	items, err := r.RewardItemsByCodes(chestRewardItemCodes)
+	if err != nil {
+		return nil, err
+	}
+	rules := currentChestRewardRules(activityID, chestNo, configuredRules, items)
+	if len(rules) != len(chestRewardItemCodes) {
+		return nil, common.NewError(500, 14007, "戒指宝箱奖励配置不足")
 	}
 	return rules, nil
 }
@@ -783,6 +937,15 @@ func summonChestCandidate(r *repository.GameRepository, ch *model.UserChestOppor
 	}
 	if selected := selectedChestCandidate(candidates); selected != nil {
 		return selected, nil
+	}
+	for i := range candidates {
+		if candidates[i].Selected != 1 {
+			continue
+		}
+		candidates[i].Selected = 0
+		if err = r.Save(&candidates[i]); err != nil {
+			return nil, err
+		}
 	}
 
 	rules, err := chestRulesWithFallback(r, ch.ActivityID, ch.ChestNo)
@@ -999,6 +1162,71 @@ func (s *GameService) SelectChest(userID, id uint64, itemCode, requestID string)
 			ChestNo:       ch.ChestNo,
 			Status:        ch.Status,
 			Reward:        chestRewardResult(selectedItem, selected.Quantity),
+		}
+		return nil
+	})
+	return out, err
+}
+
+func (s *GameService) SelectLotteryReward(userID, drawID uint64, itemCode, requestID string) (*LotteryRewardResult, error) {
+	_ = requestID
+	var out *LotteryRewardResult
+	err := s.repo.Tx(func(r *repository.GameRepository) error {
+		reward, err := r.LotteryChoiceRewardForUpdate(userID, drawID)
+		if err != nil {
+			return err
+		}
+		draw, err := r.DrawForUserForUpdate(drawID, userID)
+		if err != nil {
+			return err
+		}
+		if reward.Status == 1 || reward.Status == 2 {
+			out = &LotteryRewardResult{
+				DrawID:         draw.ID,
+				DrawIndex:      draw.DrawIndex,
+				ItemCode:       reward.RewardItem.ItemCode,
+				Name:           reward.RewardItem.Name,
+				Quantity:       reward.Quantity,
+				ImageURL:       reward.RewardItem.ImageURL,
+				AnimationURL:   reward.RewardItem.AnimationURL,
+				RequiresChoice: false,
+			}
+			return nil
+		}
+		if reward.Status != 0 || draw.RewardItem.ItemCode != trueLoveChoiceRewardCode {
+			return common.NewError(409, 13015, "当前奖励不在待选择状态")
+		}
+		if _, allowed := trueLoveChoiceItemCodes[itemCode]; !allowed {
+			return common.NewError(400, 13016, "戒指款式无效")
+		}
+		item, err := r.RewardItemByCode(itemCode)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		reward.RewardItemID = item.ID
+		reward.RewardItem = *item
+		reward.RewardSnapshot = rewardJSON(*item, reward.Quantity)
+		reward.Status = 1
+		reward.GrantedAt = &now
+		if err = r.Save(reward); err != nil {
+			return err
+		}
+		draw.RewardItemID = item.ID
+		draw.RewardItem = *item
+		draw.RewardSnapshot = rewardJSON(*item, draw.RewardQuantity)
+		if err = r.Save(draw); err != nil {
+			return err
+		}
+		out = &LotteryRewardResult{
+			DrawID:         draw.ID,
+			DrawIndex:      draw.DrawIndex,
+			ItemCode:       item.ItemCode,
+			Name:           item.Name,
+			Quantity:       reward.Quantity,
+			ImageURL:       item.ImageURL,
+			AnimationURL:   item.AnimationURL,
+			RequiresChoice: false,
 		}
 		return nil
 	})
@@ -1287,7 +1515,7 @@ func (s *GameService) ConfirmPreview(userID, orderID uint64) (*LotteryResult, er
 					return e
 				}
 			}
-			if e = grantReward(r, userID, o.ActivityID, d.RewardItem, d.RewardQuantity, "preview", d.ID, wallet); e != nil {
+			if e = grantLotteryReward(r, userID, o.ActivityID, d.RewardItem, d.RewardQuantity, "preview", d.ID, wallet); e != nil {
 				return e
 			}
 		}

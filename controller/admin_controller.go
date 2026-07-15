@@ -6,6 +6,7 @@ import (
 	"flower-lottery-backend/model"
 	tokenjwt "flower-lottery-backend/pkg/jwt"
 	"flower-lottery-backend/response"
+	"flower-lottery-backend/service"
 	"flower-lottery-backend/utils"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -14,8 +15,9 @@ import (
 )
 
 type AdminController struct {
-	db     *gorm.DB
-	tokens *tokenjwt.Manager
+	db          *gorm.DB
+	tokens      *tokenjwt.Manager
+	poolConfigs *service.PoolConfigHub
 }
 
 type adminUserRow struct {
@@ -119,8 +121,8 @@ type adminPoolRow struct {
 	RewardCount         int64      `gorm:"column:reward_count" json:"reward_count"`
 }
 
-func NewAdminController(db *gorm.DB, c config.JWT) *AdminController {
-	return &AdminController{db: db, tokens: tokenjwt.New(c)}
+func NewAdminController(db *gorm.DB, c config.JWT, poolConfigs *service.PoolConfigHub) *AdminController {
+	return &AdminController{db: db, tokens: tokenjwt.New(c), poolConfigs: poolConfigs}
 }
 func (a *AdminController) Login(c *gin.Context) {
 	var q struct {

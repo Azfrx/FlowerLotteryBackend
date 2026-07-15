@@ -135,8 +135,9 @@ func TestAuthServiceRegisterCreatesLoginReadyUser(t *testing.T) {
 	if !repository.walletCreated {
 		t.Fatal("registration did not create a wallet")
 	}
-	if repository.walletCoins != newUserInitialCoinBalance {
-		t.Fatalf("wallet initial coins = %d, want %d", repository.walletCoins, newUserInitialCoinBalance)
+	const wantInitialCoinBalance int64 = 10_000_000
+	if repository.walletCoins != wantInitialCoinBalance {
+		t.Fatalf("wallet initial coins = %d, want %d", repository.walletCoins, wantInitialCoinBalance)
 	}
 	if pair.AccessToken == "" || pair.RefreshToken == "" {
 		t.Fatal("registration did not return a login token pair")

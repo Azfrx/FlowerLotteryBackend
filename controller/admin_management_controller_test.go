@@ -2,8 +2,59 @@ package controller
 
 import (
 	"flower-lottery-backend/model"
+	"strings"
 	"testing"
+
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
 )
+
+func TestRewardItemGoingOffline(t *testing.T) {
+	tests := []struct {
+		name          string
+		currentStatus uint8
+		nextStatus    uint8
+		want          bool
+	}{
+		{name: "enabled to disabled", currentStatus: 1, nextStatus: 0, want: true},
+		{name: "enabled stays enabled", currentStatus: 1, nextStatus: 1, want: false},
+		{name: "disabled stays disabled", currentStatus: 0, nextStatus: 0, want: false},
+		{name: "disabled to enabled", currentStatus: 0, nextStatus: 1, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rewardItemGoingOffline(tt.currentStatus, tt.nextStatus); got != tt.want {
+				t.Fatalf("rewardItemGoingOffline(%d, %d) = %v, want %v", tt.currentStatus, tt.nextStatus, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOnlinePrizePoolRewardReferencesUsesPublishedEnabledPool(t *testing.T) {
+	db, err := gorm.Open(mysql.New(mysql.Config{
+		DSN:                       "test:test@tcp(127.0.0.1:3306)/test?parseTime=true",
+		SkipInitializeWithVersion: true,
+	}), &gorm.Config{DryRun: true, DisableAutomaticPing: true})
+	if err != nil {
+		t.Fatalf("open dry-run database: %v", err)
+	}
+
+	var count int64
+	query := onlinePrizePoolRewardReferences(db, 42).Count(&count)
+	if query.Error != nil {
+		t.Fatalf("build reference query: %v", query.Error)
+	}
+	sql := query.Statement.SQL.String()
+	for _, fragment := range []string{
+		"JOIN prize_pool_versions AS v ON v.id=pr.version_id AND v.status=1",
+		"JOIN prize_pools AS p ON p.id=v.prize_pool_id AND p.status=1 AND p.deleted_at IS NULL",
+		"pr.reward_item_id=?",
+	} {
+		if !strings.Contains(sql, fragment) {
+			t.Fatalf("reference query %q does not contain %q", sql, fragment)
+		}
+	}
+}
 
 func TestValidAdminResourceURL(t *testing.T) {
 	for _, value := range []string{"", "/uploads/reward.png", "https://example.com/reward.png", "http://example.com/reward.svga"} {
@@ -54,6 +105,29 @@ func TestNormalizeAndValidateExchangeOption(t *testing.T) {
 	input.SortNo = -1
 	if normalizeAndValidateExchangeOption(&input) {
 		t.Fatal("expected negative sort number to be rejected")
+	}
+}
+
+func TestAdminCoinValueForPetalCost(t *testing.T) {
+	tests := []struct {
+		name      string
+		petalCost uint64
+		want      uint64
+		valid     bool
+	}{
+		{name: "zero", petalCost: 0, valid: false},
+		{name: "day pool", petalCost: 5, want: 300, valid: true},
+		{name: "night pool", petalCost: 100, want: 6000, valid: true},
+		{name: "overflow", petalCost: ^uint64(0)/adminCoinValuePerPetal + 1, valid: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, valid := adminCoinValueForPetalCost(tt.petalCost)
+			if got != tt.want || valid != tt.valid {
+				t.Fatalf("adminCoinValueForPetalCost(%d) = (%d, %v), want (%d, %v)", tt.petalCost, got, valid, tt.want, tt.valid)
+			}
+		})
 	}
 }
 
